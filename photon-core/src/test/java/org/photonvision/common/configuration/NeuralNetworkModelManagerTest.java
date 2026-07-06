@@ -105,6 +105,30 @@ public class NeuralNetworkModelManagerTest {
         assertSame(aprilTagModel, manager.getDefaultAprilTagModel().orElseThrow());
     }
 
+    @Test
+    void getDefaultModelSkipsSupportedBackendsWithNoModels() {
+        var manager = NeuralNetworkModelManager.getInstance(true);
+        manager.supportedBackends.clear();
+        manager.supportedBackends.add(Family.RUBIK);
+        manager.supportedBackends.add(Family.RKNN);
+
+        var rknnModel =
+                new StubModel(
+                        new ModelProperties(
+                                Path.of("fuelV1-yolo11n.rknn"),
+                                "Fuel v11n",
+                                List.of("Fuel"),
+                                640,
+                                640,
+                                Family.RKNN,
+                                Version.YOLOV11));
+
+        manager.models = new HashMap<>();
+        manager.models.put(Family.RKNN, new ArrayList<>(List.of(rknnModel)));
+
+        assertSame(rknnModel, manager.getDefaultModel().orElseThrow());
+    }
+
     private record StubModel(ModelProperties properties) implements Model {
         @Override
         public ObjectDetector load() {

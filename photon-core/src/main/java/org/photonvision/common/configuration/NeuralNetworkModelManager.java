@@ -318,7 +318,18 @@ public class NeuralNetworkModelManager {
             return Optional.empty();
         }
 
-        return models.get(supportedBackends.get(0)).stream().findFirst();
+        for (Family backend : supportedBackends) {
+            if (!models.containsKey(backend)) {
+                continue;
+            }
+
+            var model = models.get(backend).stream().findFirst();
+            if (model.isPresent()) {
+                return model;
+            }
+        }
+
+        return Optional.empty();
     }
 
     /** The default AprilTag ROI model when ML-assisted AprilTag detection is enabled. */
