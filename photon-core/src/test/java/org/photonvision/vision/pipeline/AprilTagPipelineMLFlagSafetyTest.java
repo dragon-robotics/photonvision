@@ -31,6 +31,7 @@ import org.photonvision.common.configuration.ConfigManager;
 import org.photonvision.common.configuration.NeuralNetworkModelManager.Family;
 import org.photonvision.common.configuration.NeuralNetworkModelManager.Version;
 import org.photonvision.common.configuration.NeuralNetworkModelsSettings.ModelProperties;
+import org.photonvision.common.hardware.Platform;
 import org.photonvision.common.util.TestUtils;
 import org.photonvision.vision.apriltag.AprilTagFamily;
 import org.photonvision.vision.camera.QuirkyCamera;
@@ -43,6 +44,21 @@ public class AprilTagPipelineMLFlagSafetyTest {
     public void setup() {
         LoadJNI.loadLibraries();
         ConfigManager.getInstance().load();
+    }
+
+    @Test
+    public void testRubikMLDecodeLimits() {
+        assertEquals(4, AprilTagPipeline.getEffectiveMlDecodeThreads(7, Platform.LINUX_QCS6490));
+        assertEquals(2, AprilTagPipeline.getEffectiveMlDecodeThreads(2, Platform.LINUX_QCS6490));
+        assertEquals(1, AprilTagPipeline.getEffectiveMlDecodeThreads(0, Platform.LINUX_QCS6490));
+        assertEquals(7, AprilTagPipeline.getEffectiveMlDecodeThreads(7, Platform.WINDOWS_64));
+
+        assertEquals(
+                144, AprilTagPipeline.getEffectiveMlAtrTargetDimension(200, Platform.LINUX_QCS6490));
+        assertEquals(
+                128, AprilTagPipeline.getEffectiveMlAtrTargetDimension(128, Platform.LINUX_QCS6490));
+        assertEquals(1, AprilTagPipeline.getEffectiveMlAtrTargetDimension(0, Platform.LINUX_QCS6490));
+        assertEquals(200, AprilTagPipeline.getEffectiveMlAtrTargetDimension(200, Platform.WINDOWS_64));
     }
 
     @Test
@@ -101,8 +117,7 @@ public class AprilTagPipelineMLFlagSafetyTest {
 
         var frameProvider =
                 new FileFrameProvider(
-                        TestUtils.getApriltagImagePath(
-                                TestUtils.ApriltagTestImages.kTag1_640_480, false),
+                        TestUtils.getApriltagImagePath(TestUtils.ApriltagTestImages.kTag1_640_480, false),
                         TestUtils.WPI2020Image.FOV,
                         TestUtils.get2020LifeCamCoeffs(false));
         frameProvider.requestFrameThresholdType(pipeline.getThresholdType());
@@ -131,8 +146,7 @@ public class AprilTagPipelineMLFlagSafetyTest {
 
         var frameProvider =
                 new FileFrameProvider(
-                        TestUtils.getApriltagImagePath(
-                                TestUtils.ApriltagTestImages.kTag1_640_480, false),
+                        TestUtils.getApriltagImagePath(TestUtils.ApriltagTestImages.kTag1_640_480, false),
                         TestUtils.WPI2020Image.FOV,
                         TestUtils.get2020LifeCamCoeffs(false));
         frameProvider.requestFrameThresholdType(pipeline.getThresholdType());

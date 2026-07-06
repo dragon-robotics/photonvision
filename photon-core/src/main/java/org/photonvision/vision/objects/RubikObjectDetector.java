@@ -20,6 +20,7 @@ package org.photonvision.vision.objects;
 import java.awt.Color;
 import java.lang.ref.Cleaner;
 import java.lang.ref.Cleaner.Cleanable;
+import java.util.ArrayList;
 import java.util.List;
 import org.opencv.core.Mat;
 import org.opencv.core.Size;
@@ -48,6 +49,8 @@ public class RubikObjectDetector implements ObjectDetector {
     private final RubikModel model;
 
     private final Size inputSize;
+
+    private final Mat letterboxed = new Mat();
 
     /** Returns the model in use by this detector. */
     @Override
@@ -122,33 +125,31 @@ public class RubikObjectDetector implements ObjectDetector {
             return null;
         }
 
-        // Resize the frame to the input size of the model
-        Mat letterboxed = new Mat();
         Letterbox scale =
                 Letterbox.letterbox(in, letterboxed, this.inputSize, ColorHelper.colorToScalar(Color.GRAY));
         if (!letterboxed.size().equals(this.inputSize)) {
-            letterboxed.release();
             throw new RuntimeException("Letterboxed frame is not the right size!");
         }
 
         // Detect objects in the letterboxed frame
         var results = RubikJNI.detect(ptr, letterboxed.getNativeObjAddr(), boxThresh, nmsThresh);
 
-        letterboxed.release();
-
         if (results == null) {
             return List.of();
         }
 
-        return scale.resizeDetections(
-                List.of(results).stream()
-                        .map(it -> new NeuralNetworkPipeResult(it.rect, it.class_id, it.conf))
-                        .toList());
+        var detections = new ArrayList<NeuralNetworkPipeResult>(results.length);
+        for (var result : results) {
+            detections.add(new NeuralNetworkPipeResult(result.rect, result.class_id, result.conf));
+        }
+
+        return scale.resizeDetections(detections);
     }
 
     /** Thread-safe method to release the detector. */
     @Override
     public void release() {
+        letterboxed.release();
         cleanable.clean();
     }
 

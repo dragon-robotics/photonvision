@@ -115,6 +115,7 @@ public class AprilTagROIDecodePipe
 
     private AprilTagDetector detector;
     private AprilTagFamily currentFamily;
+    private final Mat resizedRoiMat = new Mat();
 
     public AprilTagROIDecodePipe() {
         detector = new AprilTagDetector();
@@ -122,7 +123,7 @@ public class AprilTagROIDecodePipe
 
     @Override
     protected List<AprilTagDetection> process(ROIDecodeInput input) {
-        List<AprilTagDetection> allDetections = new ArrayList<>();
+        List<AprilTagDetection> allDetections = new ArrayList<>(input.rois.size());
 
         if (input.grayFrame == null || input.grayFrame.getMat().empty()) {
             return allDetections;
@@ -187,7 +188,7 @@ public class AprilTagROIDecodePipe
                 atrContext = new ATRContext(S);
 
                 // Downscale ROI to target dimension
-                processingMat = new Mat();
+                processingMat = resizedRoiMat;
                 Imgproc.resize(
                         roiMat,
                         processingMat,
@@ -251,9 +252,6 @@ public class AprilTagROIDecodePipe
 
             // Cleanup
             roiMat.release();
-            if (atrContext.wasScaled) {
-                processingMat.release();
-            }
         }
 
         // === STAGE 4: POSE ESTIMATION happens in AprilTagPoseEstimatorPipe ===
@@ -435,8 +433,7 @@ public class AprilTagROIDecodePipe
     public static RotatedRect expandBbox(
             RotatedRect bbox, int paddingPixels, int imageWidth, int imageHeight) {
         int newWidth = (int) Math.round(Math.min(bbox.size.width + 2.0 * paddingPixels, imageWidth));
-        int newHeight =
-                (int) Math.round(Math.min(bbox.size.height + 2.0 * paddingPixels, imageHeight));
+        int newHeight = (int) Math.round(Math.min(bbox.size.height + 2.0 * paddingPixels, imageHeight));
 
         double left = bbox.center.x - newWidth / 2.0;
         double top = bbox.center.y - newHeight / 2.0;
@@ -476,6 +473,10 @@ public class AprilTagROIDecodePipe
      * cases where overlapping ROIs detect the same tag.
      */
     private List<AprilTagDetection> deduplicateByTagId(List<AprilTagDetection> detections) {
+        if (detections.size() <= 1) {
+            return detections;
+        }
+
         Map<Integer, AprilTagDetection> bestByTagId = new HashMap<>();
 
         for (AprilTagDetection det : detections) {
@@ -506,6 +507,7 @@ public class AprilTagROIDecodePipe
 
     @Override
     public void release() {
+        resizedRoiMat.release();
         if (detector != null) {
             detector.close();
             detector = null;

@@ -30,8 +30,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.opencv.core.RotatedRect;
-import org.photonvision.common.configuration.NeuralNetworkModelManager;
 import org.photonvision.common.configuration.ConfigManager;
+import org.photonvision.common.configuration.NeuralNetworkModelManager;
 import org.photonvision.common.dataflow.structures.Packet;
 import org.photonvision.common.hardware.Platform;
 import org.photonvision.common.logging.LogGroup;
@@ -42,24 +42,26 @@ import org.photonvision.targeting.MultiTargetPNPResult;
 import org.photonvision.vision.apriltag.AprilTagFamily;
 import org.photonvision.vision.frame.Frame;
 import org.photonvision.vision.frame.FrameThresholdType;
+import org.photonvision.vision.objects.Model;
 import org.photonvision.vision.pipe.CVPipe.CVPipeResult;
 import org.photonvision.vision.pipe.impl.AprilTagDetectionPipe;
 import org.photonvision.vision.pipe.impl.AprilTagDetectionPipe.AprilTagDetectionPipeParams;
 import org.photonvision.vision.pipe.impl.AprilTagMLHybridPipe;
-import org.photonvision.vision.pipe.impl.AprilTagROIDecodePipe;
-import org.photonvision.vision.pipe.impl.AprilTagROIDetectionPipe;
 import org.photonvision.vision.pipe.impl.AprilTagPoseEstimatorPipe;
 import org.photonvision.vision.pipe.impl.AprilTagPoseEstimatorPipe.AprilTagPoseEstimatorPipeParams;
+import org.photonvision.vision.pipe.impl.AprilTagROIDecodePipe;
+import org.photonvision.vision.pipe.impl.AprilTagROIDetectionPipe;
 import org.photonvision.vision.pipe.impl.CalculateFPSPipe;
 import org.photonvision.vision.pipe.impl.MultiTargetPNPPipe;
 import org.photonvision.vision.pipe.impl.MultiTargetPNPPipe.MultiTargetPNPPipeParams;
-import org.photonvision.vision.objects.Model;
 import org.photonvision.vision.pipeline.result.CVPipelineResult;
 import org.photonvision.vision.target.TrackedTarget;
 import org.photonvision.vision.target.TrackedTarget.TargetCalculationParameters;
 
 public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipelineSettings> {
     private static final Logger logger = new Logger(AprilTagPipeline.class, LogGroup.VisionModule);
+    private static final int RUBIK_ML_MAX_DECODE_THREADS = 4;
+    private static final int RUBIK_ML_MAX_ATR_TARGET_DIMENSION = 144;
 
     private final AprilTagDetectionPipe aprilTagDetectionPipe = new AprilTagDetectionPipe();
     private final AprilTagPoseEstimatorPipe singleTagPoseEstimatorPipe =
@@ -82,10 +84,32 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
         this.settings = settings;
     }
 
+    static int getEffectiveMlDecodeThreads(int requestedThreads, Platform platform) {
+        int sanitizedThreads = Math.max(1, requestedThreads);
+        if (platform == Platform.LINUX_QCS6490) {
+            return Math.min(sanitizedThreads, RUBIK_ML_MAX_DECODE_THREADS);
+        }
+        return sanitizedThreads;
+    }
+
+    static int getEffectiveMlAtrTargetDimension(int requestedDimension, Platform platform) {
+        int sanitizedDimension = Math.max(1, requestedDimension);
+        if (platform == Platform.LINUX_QCS6490) {
+            return Math.min(sanitizedDimension, RUBIK_ML_MAX_ATR_TARGET_DIMENSION);
+        }
+        return sanitizedDimension;
+    }
+
     @Override
     protected void setPipeParamsImpl() {
         // Sanitize thread count - not supported to have fewer than 1 threads
         settings.threads = Math.max(1, settings.threads);
+        var currentPlatform = Platform.getCurrentPlatform();
+        if (settings.useMLDetection && currentPlatform == Platform.LINUX_QCS6490) {
+            settings.threads = getEffectiveMlDecodeThreads(settings.threads, currentPlatform);
+            settings.atrTargetDimension =
+                    getEffectiveMlAtrTargetDimension(settings.atrTargetDimension, currentPlatform);
+        }
 
         // for now, hard code tag width based on enum value
         // From 2024 best guess is 6.5
@@ -119,7 +143,7 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
                 new AprilTagDetectionPipeParams(settings.tagFamily, config, quadParams));
 
         if (settings.useMLDetection) {
-            boolean platformOk = Platform.getCurrentPlatform() == Platform.LINUX_QCS6490;
+            boolean platformOk = currentPlatform == Platform.LINUX_QCS6490;
             Model aprilTagModel = null;
             if (platformOk) {
                 if (settings.model != null && settings.model.modelPath() != null) {
@@ -143,13 +167,15 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
                 decodeParams.tagFamily = settings.tagFamily;
                 decodeParams.maxHammingDistance = settings.hammingDist;
                 decodeParams.minDecisionMargin = settings.decisionMargin;
-                decodeParams.detectorConfig.numThreads = settings.threads;
+                decodeParams.detectorConfig.numThreads =
+                        getEffectiveMlDecodeThreads(settings.threads, currentPlatform);
                 decodeParams.detectorConfig.refineEdges = settings.refineEdges;
                 decodeParams.detectorConfig.quadDecimate = 1;
                 decodeParams.detectorConfig.quadSigma = (float) settings.blur;
                 decodeParams.quadParams = quadParams;
                 decodeParams.atrEnabled = settings.atrEnabled;
-                decodeParams.atrTargetDimension = settings.atrTargetDimension;
+                decodeParams.atrTargetDimension =
+                        getEffectiveMlAtrTargetDimension(settings.atrTargetDimension, currentPlatform);
                 decodeParams.atrMinScaleFactor = settings.atrMinScaleFactor;
 
                 mlHybridPipe.setParams(
