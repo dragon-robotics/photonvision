@@ -19,6 +19,7 @@ package org.photonvision.vision.pipeline;
 
 import edu.wpi.first.math.Pair;
 import java.util.List;
+import org.opencv.core.RotatedRect;
 import org.photonvision.vision.frame.Frame;
 import org.photonvision.vision.frame.FrameStaticProperties;
 import org.photonvision.vision.opencv.DualOffsetValues;
@@ -36,6 +37,7 @@ public class OutputStreamPipeline {
     private final Draw2dTargetsPipe draw2dTargetsPipe = new Draw2dTargetsPipe();
     private final Draw3dTargetsPipe draw3dTargetsPipe = new Draw3dTargetsPipe();
     private final Draw2dAprilTagsPipe draw2dAprilTagsPipe = new Draw2dAprilTagsPipe();
+    private final DrawMLROIPipe drawMLROIPipe = new DrawMLROIPipe();
     private final Draw3dAprilTagsPipe draw3dAprilTagsPipe = new Draw3dAprilTagsPipe();
     private final DrawCalibrationPipe drawCalibrationPipe = new DrawCalibrationPipe();
 
@@ -66,6 +68,14 @@ public class OutputStreamPipeline {
                         settings.outputShouldDraw,
                         settings.outputMaximumTargets,
                         settings.streamingFrameDivisor));
+
+        if (settings instanceof AprilTagPipelineSettings atSettings) {
+            drawMLROIPipe.setParams(
+                    new DrawMLROIPipe.DrawMLROIParams(
+                            settings.outputShouldDraw,
+                            atSettings.showDetectionBoxes,
+                            settings.streamingFrameDivisor));
+        }
 
         draw2dArucoPipe.setParams(
                 new Draw2dArucoPipe.Draw2dArucoParams(
@@ -118,6 +128,14 @@ public class OutputStreamPipeline {
             Frame inputAndOutputFrame,
             AdvancedPipelineSettings settings,
             List<TrackedTarget> targetsToDraw) {
+        return process(inputAndOutputFrame, settings, targetsToDraw, List.of());
+    }
+
+    public CVPipelineResult process(
+            Frame inputAndOutputFrame,
+            AdvancedPipelineSettings settings,
+            List<TrackedTarget> targetsToDraw,
+            List<RotatedRect> mlDetectionRois) {
         setPipeParams(inputAndOutputFrame.frameStaticProperties, settings);
         var inMat = inputAndOutputFrame.colorImage.getMat();
         var outMat = inputAndOutputFrame.processedImage.getMat();
@@ -182,6 +200,8 @@ public class OutputStreamPipeline {
                 pipeProfileNanos[8] = 0;
             } else if (settings instanceof AprilTagPipelineSettings) {
                 // If we are doing apriltags...
+                drawMLROIPipe.run(Pair.of(outMat, mlDetectionRois));
+
                 if (settings.solvePNPEnabled) {
                     // Draw 3d Apriltag markers (camera is calibrated and running in 3d mode)
                     pipeProfileNanos[5] = 0;
