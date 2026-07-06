@@ -257,6 +257,44 @@ public final class CombinedRuntimeLoader {
         }
     }
 
+    private static <T> boolean extractLibraryResourceIfAvailable(
+            Class<T> clazz, String libraryName, List<String> extractedFiles) throws IOException {
+        String extractionPathString = getExtractionDirectory();
+        if (extractionPathString == null) {
+            return false;
+        }
+
+        String resourceName = getPlatformPath() + "shared/" + System.mapLibraryName(libraryName);
+        try (var stream = clazz.getResourceAsStream(resourceName)) {
+            if (stream == null) {
+                return false;
+            }
+
+            var outputFile = Paths.get(extractionPathString, new File(resourceName).getName());
+            var parent = outputFile.getParent();
+            if (parent == null) {
+                throw new IOException("Output file has no parent");
+            }
+            parent.toFile().mkdirs();
+            Files.copy(stream, outputFile, StandardCopyOption.REPLACE_EXISTING);
+
+            var outputPath = outputFile.toString();
+            if (!extractedFiles.contains(outputPath)) {
+                extractedFiles.add(outputPath);
+            }
+            return true;
+        }
+    }
+
+    private static <T> void extractLibraryResourceFallbacks(
+            Class<T> clazz, String libraryName, List<String> extractedFiles) throws IOException {
+        if (libraryName.endsWith("JNI")) {
+            extractLibraryResourceIfAvailable(
+                    clazz, libraryName.substring(0, libraryName.length() - "JNI".length()), extractedFiles);
+        }
+        extractLibraryResourceIfAvailable(clazz, libraryName, extractedFiles);
+    }
+
     /**
      * Load a single library from a list of extracted files.
      *
@@ -300,6 +338,7 @@ public final class CombinedRuntimeLoader {
             }
 
             for (var library : librariesToLoad) {
+                extractLibraryResourceFallbacks(clazz, library, filesAlreadyExtracted);
                 loadLibrary(library, filesAlreadyExtracted);
             }
         }
