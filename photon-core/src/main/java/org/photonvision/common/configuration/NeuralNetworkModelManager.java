@@ -189,6 +189,16 @@ public class NeuralNetworkModelManager {
                         Family.RUBIK,
                         Version.YOLOV11));
 
+        nnProps.addModelProperties(
+                new ModelProperties(
+                        Path.of(modelsDirectory.getAbsolutePath(), "apriltagV4-yolo11.tflite"),
+                        "AprilTag V4",
+                        new LinkedList<String>(List.of("AprilTag")),
+                        640,
+                        640,
+                        Family.RUBIK,
+                        Version.YOLOV11));
+
         return nnProps;
     }
 
@@ -309,6 +319,29 @@ public class NeuralNetworkModelManager {
         }
 
         return models.get(supportedBackends.get(0)).stream().findFirst();
+    }
+
+    /** The default AprilTag ROI model when ML-assisted AprilTag detection is enabled. */
+    public Optional<Model> getDefaultAprilTagModel() {
+        if (models == null || supportedBackends.isEmpty()) {
+            return Optional.empty();
+        }
+
+        for (Family backend : supportedBackends) {
+            if (!models.containsKey(backend)) {
+                continue;
+            }
+
+            var model =
+                    models.get(backend).stream()
+                            .filter(m -> m.getNickname().toLowerCase().contains("apriltag"))
+                            .findFirst();
+            if (model.isPresent()) {
+                return model;
+            }
+        }
+
+        return Optional.empty();
     }
 
     // Do checking later on, when we create the model object
