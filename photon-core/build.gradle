@@ -18,6 +18,34 @@ def nativeTasks = wpilibTools.createExtractionTasks {
 
 nativeTasks.addToSourceSetResources(sourceSets.main)
 
+if (jniPlatform == "linuxarm64") {
+    def photonTargetingProject = project(":photon-targeting")
+    def photonTargetingLibDir = photonTargetingProject.layout.buildDirectory.dir("libs/photontargeting/shared/linuxarm64/release")
+    def photonTargetingJniLibDir = photonTargetingProject.layout.buildDirectory.dir("libs/photontargetingJNI/shared/linuxarm64/release")
+    def photonTargetingLibFile = photonTargetingProject.layout.buildDirectory.file("libs/photontargeting/shared/linuxarm64/release/libphotontargeting.so")
+    def photonTargetingJniLibFile = photonTargetingProject.layout.buildDirectory.file("libs/photontargetingJNI/shared/linuxarm64/release/libphotontargetingJNI.so")
+
+    tasks.named("processResources") {
+        if (!photonTargetingLibFile.get().asFile.exists()) {
+            dependsOn photonTargetingProject.tasks.named("photontargetingLinuxarm64ReleaseSharedLibrary")
+        }
+        if (!photonTargetingJniLibFile.get().asFile.exists()) {
+            dependsOn photonTargetingProject.tasks.named("photontargetingJNILinuxarm64ReleaseSharedLibrary")
+        }
+
+        from(photonTargetingLibDir) {
+            include "libphotontargeting.so"
+            into "linux/arm64/shared"
+            duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        }
+        from(photonTargetingJniLibDir) {
+            include "libphotontargetingJNI.so"
+            into "linux/arm64/shared"
+            duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        }
+    }
+}
+
 dependencies {
     wpilibNatives project(path: ':photon-targeting', configuration: 'wpilibNatives')
     wpilibNatives wpilibTools.deps.wpilib("wpimath")
