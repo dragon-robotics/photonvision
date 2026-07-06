@@ -10,3 +10,59 @@ echo "Using jar: " $(basename $NEW_JAR)
 DEST_PV_LOCATION=/opt/photonvision
 sudo mkdir -p $DEST_PV_LOCATION
 sudo cp $NEW_JAR ${DEST_PV_LOCATION}/photonvision.jar
+
+# Bring up the team static address during OS networking startup. PhotonVision will still
+# reconcile its own managed connection later, but this avoids a boot race where the web UI
+# is not reachable at the static IP until PhotonVision sees an active wired connection.
+sudo mkdir -p /etc/NetworkManager/system-connections
+sudo tee /etc/NetworkManager/system-connections/static-team2375.nmconnection >/dev/null <<'EOF'
+[connection]
+id=static-team2375
+uuid=23752375-2375-4375-8375-000000000014
+type=ethernet
+autoconnect=true
+autoconnect-priority=100
+
+[ethernet]
+
+[ipv4]
+method=manual
+address1=10.23.75.14/8,10.23.75.4
+may-fail=false
+
+[ipv6]
+method=disabled
+EOF
+sudo chmod 600 /etc/NetworkManager/system-connections/static-team2375.nmconnection
+
+# Debug fallback Wi-Fi. Ethernet static IP remains the primary path when it works.
+sudo tee /etc/NetworkManager/system-connections/debug-wlan0.nmconnection >/dev/null <<'EOF'
+[connection]
+id=debug-wlan0
+uuid=23752375-2375-4375-8375-0000000000d0
+type=wifi
+interface-name=wlan0
+autoconnect=true
+autoconnect-priority=-100
+
+[wifi]
+mode=infrastructure
+ssid=NinJAsPeeD
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=freewifi
+
+[ipv4]
+method=auto
+route-metric=600
+
+[ipv6]
+method=disabled
+EOF
+sudo chmod 600 /etc/NetworkManager/system-connections/debug-wlan0.nmconnection
+
+# The Rubik base image can carry an old PhotonVision settings database. Remove stale
+# network settings so first boot uses this branch's team-specific NetworkConfig defaults.
+sudo rm -f ${DEST_PV_LOCATION}/photonvision_config/photon.sqlite*
+sudo rm -f ${DEST_PV_LOCATION}/photonvision_config/networkSettings.json
