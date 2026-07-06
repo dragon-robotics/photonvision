@@ -88,9 +88,7 @@ public class AprilTagPipelineSettings extends AdvancedPipelineSettings {
         result = prime * result + mlRoiPaddingPixels;
         result =
                 prime * result
-                        + ((model == null || model.modelPath() == null)
-                                ? 0
-                                : model.modelPath().hashCode());
+                        + ((model == null || model.modelPath() == null) ? 0 : model.modelPath().hashCode());
         result = prime * result + (showDetectionBoxes ? 1231 : 1237);
         result = prime * result + (atrEnabled ? 1231 : 1237);
         result = prime * result + atrTargetDimension;

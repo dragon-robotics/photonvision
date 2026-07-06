@@ -59,8 +59,7 @@ public class AprilTagROIDecodePipeTest {
     public void coordinateMappingMatchesFullFrameDetection() {
         var frameProvider =
                 new FileFrameProvider(
-                        TestUtils.getApriltagImagePath(
-                        TestUtils.ApriltagTestImages.kTag1_640_480, false),
+                        TestUtils.getApriltagImagePath(TestUtils.ApriltagTestImages.kTag1_640_480, false),
                         TestUtils.WPI2020Image.FOV,
                         TestUtils.get2020LifeCamCoeffs(false));
         frameProvider.requestFrameThresholdType(FrameThresholdType.GREYSCALE);

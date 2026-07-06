@@ -293,8 +293,7 @@ public class VisionModule {
                 if (shouldRun) {
                     try {
                         CVPipelineResult osr =
-                                outputStreamPipeline.process(
-                                        m_frame, settings, targets, mlDetectionRois);
+                                outputStreamPipeline.process(m_frame, settings, targets, mlDetectionRois);
                         consumeResults(m_frame, targets);
 
                     } catch (Exception e) {

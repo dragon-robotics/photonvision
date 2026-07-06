@@ -64,11 +64,7 @@ public class NeuralNetworkModelManagerTest {
 
         assertTrue(
                 List.of(settings.getModels()).stream()
-                        .noneMatch(
-                                model ->
-                                        model.modelPath()
-                                                .toString()
-                                                .endsWith("apriltagV4-yolo11.rknn")));
+                        .noneMatch(model -> model.modelPath().toString().endsWith("apriltagV4-yolo11.rknn")));
     }
 
     @Test

@@ -44,7 +44,15 @@ public class CVPipelineResult implements Releasable {
             double fps,
             List<TrackedTarget> targets,
             Frame inputFrame) {
-        this(sequenceID, processingNanos, fps, targets, Optional.empty(), inputFrame, List.of(), List.of());
+        this(
+                sequenceID,
+                processingNanos,
+                fps,
+                targets,
+                Optional.empty(),
+                inputFrame,
+                List.of(),
+                List.of());
     }
 
     public CVPipelineResult(
@@ -54,7 +62,15 @@ public class CVPipelineResult implements Releasable {
             List<TrackedTarget> targets,
             Frame inputFrame,
             List<String> classNames) {
-        this(sequenceID, processingNanos, fps, targets, Optional.empty(), inputFrame, classNames, List.of());
+        this(
+                sequenceID,
+                processingNanos,
+                fps,
+                targets,
+                Optional.empty(),
+                inputFrame,
+                classNames,
+                List.of());
     }
 
     public CVPipelineResult(
@@ -64,7 +80,15 @@ public class CVPipelineResult implements Releasable {
             List<TrackedTarget> targets,
             Optional<MultiTargetPNPResult> multiTagResult,
             Frame inputFrame) {
-        this(sequenceID, processingNanos, fps, targets, multiTagResult, inputFrame, List.of(), List.of());
+        this(
+                sequenceID,
+                processingNanos,
+                fps,
+                targets,
+                multiTagResult,
+                inputFrame,
+                List.of(),
+                List.of());
     }
 
     public CVPipelineResult(
