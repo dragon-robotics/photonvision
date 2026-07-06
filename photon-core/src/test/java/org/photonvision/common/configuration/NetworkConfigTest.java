@@ -25,6 +25,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
+import org.photonvision.common.networking.NetworkMode;
 import org.photonvision.common.util.TestUtils;
 
 public class NetworkConfigTest {
@@ -35,6 +36,16 @@ public class NetworkConfigTest {
         mapper.writeValue(path.toFile(), new NetworkConfig());
         assertDoesNotThrow(() -> mapper.readValue(path.toFile(), NetworkConfig.class));
         new File("netTest.json").delete();
+    }
+
+    @Test
+    public void testTeam2375Defaults() {
+        var config = new NetworkConfig();
+
+        assertEquals("2375", config.ntServerAddress);
+        assertEquals(NetworkMode.STATIC, config.connectionType);
+        assertEquals("10.23.75.14", config.staticIp);
+        assertEquals("photonvision-ml-experiment", config.hostname);
     }
 
     @Test

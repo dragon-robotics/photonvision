@@ -26,10 +26,10 @@ import org.photonvision.common.networking.NetworkMode;
 
 public class NetworkConfig {
     // Can be an integer team number, or an IP address
-    public String ntServerAddress = "0";
-    public NetworkMode connectionType = NetworkMode.DHCP;
-    public String staticIp = "";
-    public String hostname = "photonvision";
+    public String ntServerAddress = "2375";
+    public NetworkMode connectionType = NetworkMode.STATIC;
+    public String staticIp = "10.23.75.14";
+    public String hostname = "photonvision-ml-experiment";
     public boolean runNTServer = false;
     public boolean shouldManage;
     public boolean shouldPublishProto = false;
