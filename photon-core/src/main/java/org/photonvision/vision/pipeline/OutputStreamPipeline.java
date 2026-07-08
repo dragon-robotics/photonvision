@@ -20,6 +20,8 @@ package org.photonvision.vision.pipeline;
 import edu.wpi.first.math.Pair;
 import java.util.List;
 import org.opencv.core.RotatedRect;
+import org.photonvision.common.logging.LogGroup;
+import org.photonvision.common.logging.Logger;
 import org.photonvision.vision.frame.Frame;
 import org.photonvision.vision.frame.FrameStaticProperties;
 import org.photonvision.vision.opencv.DualOffsetValues;
@@ -32,6 +34,13 @@ import org.photonvision.vision.target.TrackedTarget;
  * shall not get its settings saved, nor shall it be managed by PipelineManager
  */
 public class OutputStreamPipeline {
+    private static final Logger logger =
+            new Logger(OutputStreamPipeline.class, LogGroup.VisionModule);
+    private static final boolean PROFILE_ENABLED =
+            Boolean.getBoolean("photonvision.profile.apriltag");
+    private static final int PROFILE_PERIOD_FRAMES =
+            Math.max(1, Integer.getInteger("photonvision.profile.period", 60));
+
     private final OutputMatPipe outputMatPipe = new OutputMatPipe();
     private final Draw2dCrosshairPipe draw2dCrosshairPipe = new Draw2dCrosshairPipe();
     private final Draw2dTargetsPipe draw2dTargetsPipe = new Draw2dTargetsPipe();
@@ -47,6 +56,77 @@ public class OutputStreamPipeline {
     private final ResizeImagePipe resizeImagePipe = new ResizeImagePipe();
 
     private final long[] pipeProfileNanos = new long[12];
+    private int profileFrames;
+    private long profileTotalNanos;
+    private long profileResizeInputNanos;
+    private long profileResizeOutputNanos;
+    private long profileOutputMatNanos;
+    private long profileCrosshairNanos;
+    private long profileDrawTargetsNanos;
+    private long profileDrawMlRoiNanos;
+    private int profileTargets;
+    private int profileRois;
+
+    private static double averageMillis(long nanos, int frames) {
+        return nanos / 1e6 / Math.max(1, frames);
+    }
+
+    private static double averageCount(int count, int frames) {
+        return (double) count / Math.max(1, frames);
+    }
+
+    private void recordProfile(
+            long totalNanos,
+            long drawMlRoiNanos,
+            int targetCount,
+            int roiCount,
+            AprilTagPipelineSettings aprilTagSettings) {
+        if (!PROFILE_ENABLED || aprilTagSettings == null) {
+            return;
+        }
+
+        profileFrames++;
+        profileTotalNanos += totalNanos;
+        profileResizeInputNanos += pipeProfileNanos[0];
+        profileResizeOutputNanos += pipeProfileNanos[1];
+        profileOutputMatNanos += pipeProfileNanos[2];
+        profileCrosshairNanos += pipeProfileNanos[3] + pipeProfileNanos[4];
+        profileDrawTargetsNanos += pipeProfileNanos[5] + pipeProfileNanos[7] + pipeProfileNanos[8];
+        profileDrawMlRoiNanos += drawMlRoiNanos;
+        profileTargets += targetCount;
+        profileRois += roiCount;
+
+        if (profileFrames < PROFILE_PERIOD_FRAMES) {
+            return;
+        }
+
+        logger.info(
+                String.format(
+                        "PVPROFILE stream frames=%d totalMs=%.2f resizeInMs=%.2f resizeOutMs=%.2f outputMatMs=%.2f crosshairMs=%.3f drawTargetsMs=%.2f drawMlRoiMs=%.3f targets=%.2f rois=%.2f outputDraw=%s streamDivisor=%s",
+                        profileFrames,
+                        averageMillis(profileTotalNanos, profileFrames),
+                        averageMillis(profileResizeInputNanos, profileFrames),
+                        averageMillis(profileResizeOutputNanos, profileFrames),
+                        averageMillis(profileOutputMatNanos, profileFrames),
+                        averageMillis(profileCrosshairNanos, profileFrames),
+                        averageMillis(profileDrawTargetsNanos, profileFrames),
+                        averageMillis(profileDrawMlRoiNanos, profileFrames),
+                        averageCount(profileTargets, profileFrames),
+                        averageCount(profileRois, profileFrames),
+                        aprilTagSettings.outputShouldDraw,
+                        aprilTagSettings.streamingFrameDivisor));
+
+        profileFrames = 0;
+        profileTotalNanos = 0;
+        profileResizeInputNanos = 0;
+        profileResizeOutputNanos = 0;
+        profileOutputMatNanos = 0;
+        profileCrosshairNanos = 0;
+        profileDrawTargetsNanos = 0;
+        profileDrawMlRoiNanos = 0;
+        profileTargets = 0;
+        profileRois = 0;
+    }
 
     protected void setPipeParams(
             FrameStaticProperties frameStaticProperties, AdvancedPipelineSettings settings) {
@@ -141,6 +221,7 @@ public class OutputStreamPipeline {
         var outMat = inputAndOutputFrame.processedImage.getMat();
 
         long sumPipeNanosElapsed = 0L;
+        long drawMlRoiNanos = 0L;
 
         // Resize both in place before doing any conversion
         boolean inEmpty = inMat.empty();
@@ -200,7 +281,9 @@ public class OutputStreamPipeline {
                 pipeProfileNanos[8] = 0;
             } else if (settings instanceof AprilTagPipelineSettings) {
                 // If we are doing apriltags...
-                drawMLROIPipe.run(Pair.of(outMat, mlDetectionRois));
+                var drawMlRoiResult = drawMLROIPipe.run(Pair.of(outMat, mlDetectionRois));
+                drawMlRoiNanos = drawMlRoiResult.nanosElapsed;
+                sumPipeNanosElapsed += drawMlRoiNanos;
 
                 if (settings.solvePNPEnabled) {
                     // Draw 3d Apriltag markers (camera is calibrated and running in 3d mode)
@@ -246,6 +329,12 @@ public class OutputStreamPipeline {
 
         var fpsResult = calculateFPSPipe.run(null);
         var fps = fpsResult.output;
+        recordProfile(
+                sumPipeNanosElapsed,
+                drawMlRoiNanos,
+                targetsToDraw.size(),
+                mlDetectionRois.size(),
+                settings instanceof AprilTagPipelineSettings atSettings ? atSettings : null);
 
         return new CVPipelineResult(
                 inputAndOutputFrame.sequenceID,

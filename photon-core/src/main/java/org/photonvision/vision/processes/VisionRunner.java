@@ -41,6 +41,13 @@ import org.photonvision.vision.pipeline.result.CVPipelineResult;
 /** VisionRunner has a frame supplier, a pipeline supplier, and a result consumer */
 @SuppressWarnings("rawtypes")
 public class VisionRunner {
+    static final String PROFILE_NON_BLOCK_FRAMES_PROPERTY = "photonvision.profile.nonBlockFrames";
+
+    private static final boolean PROFILE_ENABLED =
+            Boolean.getBoolean("photonvision.profile.apriltag");
+    private static final int PROFILE_PERIOD_FRAMES =
+            Math.max(1, Integer.getInteger("photonvision.profile.period", 60));
+
     private final Logger logger;
     private final Thread visionProcessThread;
     private final FrameProvider frameSupplier;
@@ -52,6 +59,11 @@ public class VisionRunner {
     private final Supplier<Integer> fpsLimitSupplier;
 
     private long loopCount;
+    private int profileFrames;
+    private long profileFrameGetNanos;
+    private long profilePipelineNanos;
+    private long profileConsumerNanos;
+    private long profileLoopNanos;
 
     /**
      * VisionRunner contains a thread to run a pipeline, given a frame, and will give the result to
@@ -79,6 +91,51 @@ public class VisionRunner {
         visionProcessThread.setName("VisionRunner - " + frameSupplier.getName());
         logger = new Logger(VisionRunner.class, frameSupplier.getName(), LogGroup.VisionModule);
         changeSubscriber.processSettingChanges();
+    }
+
+    private static double averageMillis(long nanos, int frames) {
+        return nanos / 1e6 / Math.max(1, frames);
+    }
+
+    static boolean shouldBlockForFrames(boolean settingsBlockForFrames) {
+        return settingsBlockForFrames && !Boolean.getBoolean(PROFILE_NON_BLOCK_FRAMES_PROPERTY);
+    }
+
+    private void recordProfile(
+            long frameGetNanos,
+            long pipelineNanos,
+            long consumerNanos,
+            long loopNanos,
+            boolean blockForFrames) {
+        if (!PROFILE_ENABLED) {
+            return;
+        }
+
+        profileFrames++;
+        profileFrameGetNanos += frameGetNanos;
+        profilePipelineNanos += pipelineNanos;
+        profileConsumerNanos += consumerNanos;
+        profileLoopNanos += loopNanos;
+
+        if (profileFrames < PROFILE_PERIOD_FRAMES) {
+            return;
+        }
+
+        logger.info(
+                String.format(
+                        "PVPROFILE runner frames=%d blockForFrames=%s frameGetMs=%.2f pipelineMs=%.2f consumerMs=%.2f loopMs=%.2f",
+                        profileFrames,
+                        blockForFrames,
+                        averageMillis(profileFrameGetNanos, profileFrames),
+                        averageMillis(profilePipelineNanos, profileFrames),
+                        averageMillis(profileConsumerNanos, profileFrames),
+                        averageMillis(profileLoopNanos, profileFrames)));
+
+        profileFrames = 0;
+        profileFrameGetNanos = 0;
+        profilePipelineNanos = 0;
+        profileConsumerNanos = 0;
+        profileLoopNanos = 0;
     }
 
     public void startProcess() {
@@ -150,6 +207,7 @@ public class VisionRunner {
 
         while (!Thread.interrupted()) {
             long start = System.currentTimeMillis();
+            long loopStartNanos = System.nanoTime();
             changeSubscriber.processSettingChanges();
             synchronized (runnableList) {
                 for (var runnable : runnableList) {
@@ -181,10 +239,13 @@ public class VisionRunner {
             }
             frameSupplier.requestFrameRotation(settings.inputImageRotationMode);
             frameSupplier.requestFrameCopies(settings.inputShouldShow, settings.outputShouldShow);
-            frameSupplier.requestBlockForFrames(settings.blockForFrames);
+            boolean blockForFrames = shouldBlockForFrames(settings.blockForFrames);
+            frameSupplier.requestBlockForFrames(blockForFrames);
 
             // Grab the new camera frame
+            long frameGetStartNanos = System.nanoTime();
             var frame = frameSupplier.get();
+            long frameGetNanos = System.nanoTime() - frameGetStartNanos;
 
             // Frame empty -- no point in trying to do anything more?
             if (frame.processedImage.getMat().empty() && frame.colorImage.getMat().empty()) {
@@ -200,8 +261,18 @@ public class VisionRunner {
                 // There's no guarantee the processing type change will occur this tick, so
                 // pipelines should check themselves
                 try {
+                    long pipelineStartNanos = System.nanoTime();
                     var pipelineResult = pipeline.run(frame, cameraQuirks);
+                    long pipelineNanos = System.nanoTime() - pipelineStartNanos;
+                    long consumerStartNanos = System.nanoTime();
                     pipelineResultConsumer.accept(pipelineResult);
+                    long consumerNanos = System.nanoTime() - consumerStartNanos;
+                    recordProfile(
+                            frameGetNanos,
+                            pipelineNanos,
+                            consumerNanos,
+                            System.nanoTime() - loopStartNanos,
+                            blockForFrames);
                 } catch (Exception ex) {
                     logger.error("Exception on loop " + loopCount, ex);
                 }

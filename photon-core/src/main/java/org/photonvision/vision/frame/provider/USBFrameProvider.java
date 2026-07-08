@@ -71,6 +71,47 @@ public class USBFrameProvider extends CpuImageProcessor {
 
     final double CSCORE_DEFAULT_FRAME_TIMEOUT = 1.0 / 4.0;
 
+    private CapturedFrame getRawInputMat() {
+        // We allocate memory so we don't fill a Mat in use by another thread (memory model is easier)
+        // TODO - consider a frame pool
+        // TODO - getCurrentVideoMode is a JNI call for us, but profiling indicates it's fast
+        var cameraMode = settables.getCurrentVideoMode();
+        var frame = new RawFrame();
+        frame.setInfo(
+                cameraMode.width,
+                cameraMode.height,
+                // hard-coded 3 channel
+                cameraMode.width * 3,
+                PixelFormat.kBGR);
+
+        // This is from wpi::Now, or WPIUtilJNI.now(). The epoch from grabFrame is uS since
+        // Hal::initialize was called
+        long captureTimeUs =
+                CscoreExtras.grabRawSinkFrameTimeoutLastTime(
+                        cvSink.getHandle(),
+                        frame.getNativeObj(),
+                        CSCORE_DEFAULT_FRAME_TIMEOUT,
+                        lastTime);
+        lastTime = captureTimeUs;
+
+        CVMat ret;
+
+        if (captureTimeUs == 0) {
+            var error = cvSink.getError();
+            logger.error("Error grabbing image: " + error);
+
+            frame.close();
+            ret = new CVMat();
+        } else {
+            // No error! yay
+            var mat = new Mat(CscoreExtras.wrapRawFrame(frame.getNativeObj()));
+
+            ret = new CVMat(mat, frame);
+        }
+
+        return new CapturedFrame(ret, settables.getFrameStaticProperties(), captureTimeUs * 1000);
+    }
+
     @Override
     public CapturedFrame getInputMat() {
         if (!cameraPropertiesCached && camera.isConnected()) {
@@ -93,41 +134,7 @@ public class USBFrameProvider extends CpuImageProcessor {
 
             return new CapturedFrame(mat, settables.getFrameStaticProperties(), captureTimeNs);
         } else {
-            // We allocate memory so we don't fill a Mat in use by another thread (memory model is easier)
-            // TODO - consider a frame pool
-            // TODO - getCurrentVideoMode is a JNI call for us, but profiling indicates it's fast
-            var cameraMode = settables.getCurrentVideoMode();
-            var frame = new RawFrame();
-            frame.setInfo(
-                    cameraMode.width,
-                    cameraMode.height,
-                    // hard-coded 3 channel
-                    cameraMode.width * 3,
-                    PixelFormat.kBGR);
-
-            // This is from wpi::Now, or WPIUtilJNI.now(). The epoch from grabFrame is uS since
-            // Hal::initialize was called
-            long captureTimeUs =
-                    CscoreExtras.grabRawSinkFrameTimeoutLastTime(
-                            cvSink.getHandle(), frame.getNativeObj(), CSCORE_DEFAULT_FRAME_TIMEOUT, lastTime);
-            lastTime = captureTimeUs;
-
-            CVMat ret;
-
-            if (captureTimeUs == 0) {
-                var error = cvSink.getError();
-                logger.error("Error grabbing image: " + error);
-
-                frame.close();
-                ret = new CVMat();
-            } else {
-                // No error! yay
-                var mat = new Mat(CscoreExtras.wrapRawFrame(frame.getNativeObj()));
-
-                ret = new CVMat(mat, frame);
-            }
-
-            return new CapturedFrame(ret, settables.getFrameStaticProperties(), captureTimeUs * 1000);
+            return getRawInputMat();
         }
     }
 
