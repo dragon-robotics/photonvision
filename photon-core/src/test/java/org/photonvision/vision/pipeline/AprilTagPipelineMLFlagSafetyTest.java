@@ -52,6 +52,9 @@ public class AprilTagPipelineMLFlagSafetyTest {
         assertEquals(2, AprilTagPipeline.getEffectiveMlDecodeThreads(2, Platform.LINUX_QCS6490));
         assertEquals(1, AprilTagPipeline.getEffectiveMlDecodeThreads(0, Platform.LINUX_QCS6490));
         assertEquals(7, AprilTagPipeline.getEffectiveMlDecodeThreads(7, Platform.WINDOWS_64));
+        assertEquals(1, AprilTagPipeline.getEffectiveMlDecodeThreads(4, Platform.LINUX_QCS6490, 1));
+        assertEquals(3, AprilTagPipeline.getEffectiveMlDecodeThreads(4, Platform.LINUX_QCS6490, 3));
+        assertEquals(4, AprilTagPipeline.getEffectiveMlDecodeThreads(4, Platform.LINUX_QCS6490, 7));
 
         assertEquals(
                 144, AprilTagPipeline.getEffectiveMlAtrTargetDimension(200, Platform.LINUX_QCS6490));
