@@ -25,7 +25,7 @@ import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.util.PixelFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Optional;
@@ -280,10 +280,16 @@ public class GenericUSBCameraSettables extends VisionSourceSettables {
                 logger.error("Got a null video mode! Doing nothing...");
                 return;
             }
-            if (camera.setVideoMode(videoMode)) logger.debug("Failed to set video mode!");
+            if (didSetVideoModeFail(camera.setVideoMode(videoMode))) {
+                logger.debug("Failed to set video mode!");
+            }
         } catch (Exception e) {
             logger.error("Failed to set video mode!", e);
         }
+    }
+
+    static boolean didSetVideoModeFail(boolean setVideoModeResult) {
+        return !setVideoModeResult;
     }
 
     private void cacheVideoModes() {
@@ -308,15 +314,7 @@ public class GenericUSBCameraSettables extends VisionSourceSettables {
             videoModesList = List.of();
         }
 
-        // Sort by resolution
-        var sortedList =
-                videoModesList.stream()
-                        .distinct() // remove redundant video mode entries
-                        .sorted(((a, b) -> (b.width + b.height) - (a.width + a.height)))
-                        .collect(Collectors.toList());
-        // The ordering is usually more logical when done like this. It typically puts higher FPSes
-        // closer to the bottom.
-        Collections.reverse(sortedList);
+        var sortedList = sortVideoModesForDisplay(videoModesList);
 
         for (int i = 0; i < sortedList.size(); i++) {
             videoModes.put(i, sortedList.get(i));
@@ -327,6 +325,29 @@ public class GenericUSBCameraSettables extends VisionSourceSettables {
         if (videoModes.isEmpty()) {
             logger.info("Camera " + camera.getPath() + " has no video modes supported by PhotonVision");
         }
+    }
+
+    static List<VideoMode> sortVideoModesForDisplay(List<VideoMode> videoModesList) {
+        return videoModesList.stream()
+                .distinct() // remove redundant video mode entries
+                .sorted(
+                        Comparator.comparingInt(
+                                        (VideoMode mode) -> mode.width + mode.height)
+                                // Keep higher FPS options closer to the bottom within a resolution.
+                                .thenComparingInt(mode -> mode.fps)
+                                .thenComparingInt(GenericUSBCameraSettables::pixelFormatSortKey)
+                                .thenComparingInt(mode -> mode.pixelFormat.getValue()))
+                .collect(Collectors.toList());
+    }
+
+    private static int pixelFormatSortKey(VideoMode mode) {
+        if (mode.pixelFormat == PixelFormat.kYUYV) {
+            return 0;
+        }
+        if (mode.pixelFormat == PixelFormat.kMJPEG) {
+            return 1;
+        }
+        return 2;
     }
 
     @Override
