@@ -61,6 +61,7 @@ import org.photonvision.vision.camera.PVCameraInfo;
 import org.photonvision.vision.objects.ObjectDetector;
 import org.photonvision.vision.objects.RknnModel;
 import org.photonvision.vision.objects.RubikModel;
+import org.photonvision.vision.objects.TensorRtModel;
 import org.photonvision.vision.processes.VisionSourceManager;
 import org.zeroturnaround.zip.ZipUtil;
 
@@ -624,6 +625,16 @@ public class RequestHandler {
                 case LINUX_RK3588_64:
                     family = NeuralNetworkModelManager.Family.RKNN;
                     break;
+                case LINUX_AARCH64:
+                    if (!Platform.isJetson()) {
+                        ctx.status(400);
+                        ctx.result("The current platform does not support object detection models");
+                        logger.error("The current platform does not support object detection models");
+                        return;
+                    }
+
+                    family = NeuralNetworkModelManager.Family.TENSORRT;
+                    break;
                 default:
                     ctx.status(400);
                     ctx.result("The current platform does not support object detection models");
@@ -680,6 +691,7 @@ public class RequestHandler {
                             switch (family) {
                                 case RUBIK -> new RubikModel(modelProperties).load();
                                 case RKNN -> new RknnModel(modelProperties).load();
+                                case TENSORRT -> new TensorRtModel(modelProperties).load();
                             };
                 } catch (RuntimeException e) {
                     ctx.status(400);
