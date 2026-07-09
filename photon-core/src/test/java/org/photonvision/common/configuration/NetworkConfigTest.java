@@ -29,6 +29,16 @@ import org.photonvision.common.util.TestUtils;
 
 public class NetworkConfigTest {
     @Test
+    public void testTeam2375OrinDefaults() {
+        var config = new NetworkConfig();
+
+        assertEquals("2375", config.ntServerAddress);
+        assertEquals(org.photonvision.common.networking.NetworkMode.STATIC, config.connectionType);
+        assertEquals("10.23.75.15", config.staticIp);
+        assertEquals("photonvision-orin-nano-ml-tag", config.hostname);
+    }
+
+    @Test
     public void testSerialization() throws IOException {
         var mapper = new ObjectMapper();
         var path = Path.of("netTest.json");

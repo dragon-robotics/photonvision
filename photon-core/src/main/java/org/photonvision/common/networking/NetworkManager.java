@@ -22,7 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
-import java.util.NoSuchElementException;
+import java.util.List;
 import org.photonvision.common.configuration.ConfigManager;
 import org.photonvision.common.configuration.NetworkConfig;
 import org.photonvision.common.dataflow.DataChangeDestination;
@@ -88,28 +88,34 @@ public class NetworkManager {
             monitorDevice(deviceInfo.devName(), 5000);
         }
 
-        var physicalDevices = NetworkUtils.getAllActiveWiredInterfaces();
         var config = ConfigManager.getInstance().getConfig().getNetworkConfig();
-        if (physicalDevices.stream()
-                .noneMatch(it -> (it.devName().equals(config.networkManagerIface)))) {
-            try {
-                // if the configured interface isn't in the list of available ones, select one that is
-                var iFace = physicalDevices.stream().findFirst().orElseThrow();
-                logger.warn(
-                        "The configured interface doesn't match any available interface. Applying configuration to "
-                                + iFace.devName());
-                // update NetworkConfig with found interface
-                config.networkManagerIface = iFace.devName();
-                ConfigManager.getInstance().requestSave();
-            } catch (NoSuchElementException e) {
-                // if there are no available interfaces, go with the one from settings
-                logger.warn("No physical interface found. Maybe ethernet isn't connected?");
-                if (config.networkManagerIface == null || config.networkManagerIface.isBlank()) {
-                    // if it's also empty, there is nothing to configure
-                    logger.error("No valid network interfaces to manage");
-                    return;
-                }
-            }
+        var selectedInterface = selectManagedInterface(config, ethernetDevices);
+        if (selectedInterface == null || selectedInterface.isBlank()) {
+            logger.warn("No physical interface found. Maybe ethernet isn't connected?");
+            logger.error("No valid network interfaces to manage");
+            return;
+        }
+
+        if (!selectedInterface.equals(config.networkManagerIface)) {
+            logger.warn(
+                    "The configured interface doesn't match any available interface. Applying configuration to "
+                            + selectedInterface);
+            // update NetworkConfig with found interface
+            config.networkManagerIface = selectedInterface;
+            ConfigManager.getInstance().requestSave();
+        } else if (ethernetDevices.isEmpty()) {
+            logger.warn(
+                    "No physical interface found. Applying configuration to saved interface "
+                            + config.networkManagerIface);
+        } else if (ethernetDevices.stream()
+                .filter(it -> it.devName().equals(config.networkManagerIface))
+                .findFirst()
+                .map(it -> it.connName().isBlank())
+                .orElse(false)) {
+            logger.info(
+                    "Applying configuration to "
+                            + config.networkManagerIface
+                            + " before NetworkManager reports an active connection");
         }
 
         logger.info(
@@ -132,6 +138,25 @@ public class NetworkManager {
         } else if (config.connectionType == NetworkMode.STATIC) {
             setConnectionStatic(config);
         }
+    }
+
+    static String selectManagedInterface(NetworkConfig config, List<NMDeviceInfo> ethernetDevices) {
+        if (config.networkManagerIface != null && !config.networkManagerIface.isBlank()) {
+            var configuredDevice =
+                    ethernetDevices.stream()
+                            .filter(it -> it.devName().equals(config.networkManagerIface))
+                            .findFirst();
+            if (configuredDevice.isPresent() || ethernetDevices.isEmpty()) {
+                return config.networkManagerIface;
+            }
+        }
+
+        return ethernetDevices.stream()
+                .filter(it -> !it.connName().isBlank())
+                .findFirst()
+                .or(() -> ethernetDevices.stream().findFirst())
+                .map(NMDeviceInfo::devName)
+                .orElse(config.networkManagerIface);
     }
 
     public void reinitialize() {
