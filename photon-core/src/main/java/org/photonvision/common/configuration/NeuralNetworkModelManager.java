@@ -41,6 +41,7 @@ import org.photonvision.common.logging.Logger;
 import org.photonvision.vision.objects.Model;
 import org.photonvision.vision.objects.RknnModel;
 import org.photonvision.vision.objects.RubikModel;
+import org.photonvision.vision.objects.TensorRtModel;
 
 /**
  * Manages the loading of neural network models.
@@ -379,10 +380,7 @@ public class NeuralNetworkModelManager {
                     models.get(properties.family()).add(new RubikModel(properties));
                 }
                 case TENSORRT -> {
-                    logger.info(
-                            "Deferring TensorRT model object construction until detector support is added: "
-                                    + properties.nickname());
-                    return;
+                    models.get(properties.family()).add(new TensorRtModel(properties));
                 }
             }
             logger.info(
