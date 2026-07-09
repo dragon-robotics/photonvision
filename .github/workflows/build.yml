@@ -559,6 +559,12 @@ jobs:
             minimum_free_mb: 1024
           - os: ubuntu-24.04-arm
             artifact-name: LinuxArm64
+            image_suffix: orinnano
+            plat_override: LINUX_AARCH64
+            image_url: ${{ vars.ORIN_NANO_IMAGE_URL }}
+            minimum_free_mb: 2048
+          - os: ubuntu-24.04-arm
+            artifact-name: LinuxArm64
             image_suffix: rubikpi3
             plat_override: LINUX_QCS6490
             # CHANGE BACK TO $IMAGE_VERSION AFTER BUMPING
@@ -578,6 +584,11 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: jar-${{ matrix.artifact-name }}
+      - name: Validate Orin image URL
+        if: ${{ matrix.image_suffix == 'orinnano' && matrix.image_url == '' }}
+        run: |
+          echo "ORIN_NANO_IMAGE_URL repository variable must point to a pinned Orin Nano .img.xz base image"
+          exit 1
       - uses: photonvision/photon-image-runner@HEAD
         name: Generate image
         id: generate_image
