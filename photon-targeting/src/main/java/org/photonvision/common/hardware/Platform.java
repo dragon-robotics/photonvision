@@ -128,6 +128,11 @@ public enum Platform {
         return currentPlatform == LINUX_QCS6490 || Platform.isRubik();
     }
 
+    public static boolean isJetson() {
+        return currentPlatform == LINUX_AARCH64
+                && fileHasText("/proc/device-tree/model", "NVIDIA Jetson");
+    }
+
     public static boolean isRaspberryPi() {
         return currentPlatform.isPi;
     }

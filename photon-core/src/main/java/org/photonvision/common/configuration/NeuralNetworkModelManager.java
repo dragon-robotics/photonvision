@@ -189,6 +189,16 @@ public class NeuralNetworkModelManager {
                         Family.RUBIK,
                         Version.YOLOV11));
 
+        nnProps.addModelProperties(
+                new ModelProperties(
+                        Path.of(modelsDirectory.getAbsolutePath(), "apriltag-640-640-yolo.onnx"),
+                        "AprilTag ROI",
+                        new LinkedList<String>(List.of("AprilTag")),
+                        640,
+                        640,
+                        Family.TENSORRT,
+                        Version.YOLOV8));
+
         return nnProps;
     }
 
@@ -201,6 +211,11 @@ public class NeuralNetworkModelManager {
         switch (Platform.getCurrentPlatform()) {
             case LINUX_QCS6490 -> supportedBackends.add(Family.RUBIK);
             case LINUX_RK3588_64 -> supportedBackends.add(Family.RKNN);
+            case LINUX_AARCH64 -> {
+                if (Platform.isJetson()) {
+                    supportedBackends.add(Family.TENSORRT);
+                }
+            }
             default -> {
                 logger.warn(
                         "No supported neural network backends found for this platform: "
@@ -239,7 +254,8 @@ public class NeuralNetworkModelManager {
 
     public enum Family {
         RKNN(".rknn"),
-        RUBIK(".tflite");
+        RUBIK(".tflite"),
+        TENSORRT(".onnx");
 
         private final String fileExtension;
 
@@ -361,6 +377,12 @@ public class NeuralNetworkModelManager {
                 }
                 case RUBIK -> {
                     models.get(properties.family()).add(new RubikModel(properties));
+                }
+                case TENSORRT -> {
+                    logger.info(
+                            "Deferring TensorRT model object construction until detector support is added: "
+                                    + properties.nickname());
+                    return;
                 }
             }
             logger.info(

@@ -35,7 +35,8 @@ import org.photonvision.common.configuration.NeuralNetworkModelManager.Version;
 public class NeuralNetworkModelsSettings {
     /*
      * The properties of the model. This is used to determine which model to load.
-     * The only families currently supported are RKNN and Rubik (custom .tflite)
+     * The only families currently supported are RKNN, Rubik (custom .tflite), and TensorRT
+     * (.onnx).
      */
     public record ModelProperties(
             @JsonProperty("modelPath") Path modelPath,
