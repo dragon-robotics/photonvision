@@ -29,6 +29,7 @@ import edu.wpi.first.math.util.Units;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import org.opencv.core.RotatedRect;
 import org.photonvision.common.configuration.NeuralNetworkModelManager;
 import org.photonvision.common.configuration.ConfigManager;
 import org.photonvision.common.dataflow.structures.Packet;
@@ -202,9 +203,11 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
         }
 
         List<AprilTagDetection> detections;
+        List<RotatedRect> mlDetectionRois = List.of();
         if (settings.useMLDetection && mlHybridPipe.isAvailable()) {
             var mlResult = mlHybridPipe.run(frame);
             detections = mlResult.output.detections();
+            mlDetectionRois = mlResult.output.rois();
             sumPipeNanosElapsed += mlResult.nanosElapsed;
             if (detections.isEmpty() && settings.mlFallbackToTraditional) {
                 var fallbackResult = aprilTagDetectionPipe.run(frame.processedImage);
@@ -319,7 +322,14 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
         var fps = fpsResult.output;
 
         return new CVPipelineResult(
-                frame.sequenceID, sumPipeNanosElapsed, fps, targetList, multiTagResult, frame);
+                frame.sequenceID,
+                sumPipeNanosElapsed,
+                fps,
+                targetList,
+                multiTagResult,
+                frame,
+                List.of(),
+                mlDetectionRois);
     }
 
     @Override

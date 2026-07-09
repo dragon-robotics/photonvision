@@ -23,7 +23,7 @@ export interface ObjectDetectionModelProperties {
   labels: string[];
   resolutionWidth: number;
   resolutionHeight: number;
-  family: "RKNN" | "RUBIK";
+  family: "RKNN" | "RUBIK" | "TENSORRT";
   version: "YOLOV5" | "YOLOV8" | "YOLOV11";
 }
 

@@ -228,6 +228,13 @@ export interface AprilTagPipelineSettings extends PipelineSettings {
   tagFamily: AprilTagFamily;
   doMultiTarget: boolean;
   doSingleTargetAlways: boolean;
+  useMLDetection: boolean;
+  mlConfidenceThreshold: number;
+  mlNmsThreshold: number;
+  mlRoiPaddingPixels: number;
+  mlFallbackToTraditional: boolean;
+  mlModelName: string | null;
+  showDetectionBoxes: boolean;
 }
 export type ConfigurableAprilTagPipelineSettings = Partial<
   Omit<AprilTagPipelineSettings, "pipelineType" | "hammingDist" | "debug">
@@ -251,7 +258,14 @@ export const DefaultAprilTagPipelineSettings: AprilTagPipelineSettings = {
   threads: 4,
   tagFamily: AprilTagFamily.Family36h11,
   doMultiTarget: false,
-  doSingleTargetAlways: false
+  doSingleTargetAlways: false,
+  useMLDetection: false,
+  mlConfidenceThreshold: 0.5,
+  mlNmsThreshold: 0.45,
+  mlRoiPaddingPixels: 40,
+  mlFallbackToTraditional: true,
+  mlModelName: null,
+  showDetectionBoxes: true
 };
 
 export interface ArucoPipelineSettings extends PipelineSettings {
