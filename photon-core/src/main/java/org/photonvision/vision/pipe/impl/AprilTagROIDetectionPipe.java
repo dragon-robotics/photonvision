@@ -20,6 +20,8 @@ package org.photonvision.vision.pipe.impl;
 import java.util.ArrayList;
 import java.util.List;
 import org.opencv.core.RotatedRect;
+import org.photonvision.common.logging.LogGroup;
+import org.photonvision.common.logging.Logger;
 import org.photonvision.vision.objects.Model;
 import org.photonvision.vision.objects.NullModel;
 import org.photonvision.vision.objects.ObjectDetector;
@@ -30,6 +32,9 @@ import org.photonvision.vision.pipe.CVPipe;
 public class AprilTagROIDetectionPipe
         extends CVPipe<CVMat, List<RotatedRect>, AprilTagROIDetectionPipe.AprilTagROIDetectionParams>
         implements Releasable {
+    private static final Logger logger =
+            new Logger(AprilTagROIDetectionPipe.class, LogGroup.VisionModule);
+
     private ObjectDetector detector;
     private Model currentModel;
 
@@ -83,8 +88,14 @@ public class AprilTagROIDetectionPipe
             if (detector != null && !(detector instanceof NullModel)) {
                 detector.release();
             }
-            detector = newParams.model.load();
-            currentModel = newParams.model;
+            detector = NullModel.getInstance();
+            currentModel = null;
+            try {
+                detector = newParams.model.load();
+                currentModel = newParams.model;
+            } catch (RuntimeException | LinkageError e) {
+                logger.error("Failed to load AprilTag ROI model " + newParams.model.getUID(), e);
+            }
         }
         super.setParams(newParams);
     }

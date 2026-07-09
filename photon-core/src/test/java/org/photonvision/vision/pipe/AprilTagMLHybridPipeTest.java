@@ -80,6 +80,19 @@ public class AprilTagMLHybridPipeTest {
         pipe.release();
     }
 
+    @Test
+    public void roiDetectionPipeTreatsThrowingModelAsUnavailable() {
+        var pipe = new AprilTagROIDetectionPipe();
+
+        pipe.setParams(
+                new AprilTagROIDetectionPipe.AprilTagROIDetectionParams(
+                        new ThrowingModel(), 0.5, 0.45));
+
+        assertFalse(pipe.isAvailable());
+
+        pipe.release();
+    }
+
     private static final class FakeModel implements Model {
         private final FakeObjectDetector detector;
 
@@ -146,6 +159,40 @@ public class AprilTagMLHybridPipeTest {
         @Override
         public void release() {
             released = true;
+        }
+    }
+
+    private static final class ThrowingModel implements Model {
+        @Override
+        public ObjectDetector load() {
+            throw new RuntimeException("boom");
+        }
+
+        @Override
+        public String getUID() {
+            return "throwing-model";
+        }
+
+        @Override
+        public String getNickname() {
+            return "throwing-model";
+        }
+
+        @Override
+        public Family getFamily() {
+            return Family.TENSORRT;
+        }
+
+        @Override
+        public ModelProperties getProperties() {
+            return new ModelProperties(
+                    java.nio.file.Path.of("throwing.onnx"),
+                    "throwing-model",
+                    List.of("AprilTag"),
+                    640,
+                    640,
+                    Family.TENSORRT,
+                    Version.YOLOV8);
         }
     }
 }

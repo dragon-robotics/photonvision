@@ -41,6 +41,7 @@ import org.photonvision.common.logging.Logger;
 import org.photonvision.vision.objects.Model;
 import org.photonvision.vision.objects.RknnModel;
 import org.photonvision.vision.objects.RubikModel;
+import org.photonvision.vision.objects.TensorRtJNI;
 import org.photonvision.vision.objects.TensorRtModel;
 
 /**
@@ -213,7 +214,7 @@ public class NeuralNetworkModelManager {
             case LINUX_QCS6490 -> supportedBackends.add(Family.RUBIK);
             case LINUX_RK3588_64 -> supportedBackends.add(Family.RKNN);
             case LINUX_AARCH64 -> {
-                if (Platform.isJetson()) {
+                if (Platform.isJetson() && TensorRtJNI.isAvailable()) {
                     supportedBackends.add(Family.TENSORRT);
                 }
             }

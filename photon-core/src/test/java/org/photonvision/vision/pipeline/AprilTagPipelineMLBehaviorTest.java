@@ -182,6 +182,32 @@ public class AprilTagPipelineMLBehaviorTest {
         pipeline.release();
     }
 
+    @Test
+    public void throwingMlModelFallsBackToTraditionalDetection() {
+        var traditionalPipe = new FakeAprilTagDetectionPipe(List.of(makeDetection(5)));
+        var pipeline =
+                new TestAprilTagPipeline(
+                        traditionalPipe,
+                        new AprilTagMLHybridPipe(),
+                        new AprilTagPoseEstimatorPipe(),
+                        new MultiTargetPNPPipe(),
+                        new CalculateFPSPipe(),
+                        Optional.of(new ThrowingModel()));
+        pipeline.getSettings().useMLDetection = true;
+        pipeline.getSettings().mlFallbackToTraditional = true;
+        pipeline.getSettings().solvePNPEnabled = false;
+
+        var frame = makeFrame();
+        var result = pipeline.run(frame, QuirkyCamera.DefaultCamera);
+
+        assertEquals(1, traditionalPipe.runCount);
+        assertEquals(1, result.targets.size());
+        assertEquals(5, result.targets.get(0).getFiducialId());
+        result.release();
+        frame.release();
+        pipeline.release();
+    }
+
     private static AprilTagDetection makeDetection(int id) {
         return new AprilTagDetection(
                 "tag36h11",
@@ -314,6 +340,40 @@ public class AprilTagPipelineMLBehaviorTest {
         @Override
         public String toString() {
             return getUID();
+        }
+    }
+
+    private static final class ThrowingModel implements Model {
+        @Override
+        public org.photonvision.vision.objects.ObjectDetector load() {
+            throw new RuntimeException("boom");
+        }
+
+        @Override
+        public String getUID() {
+            return "throwing-ml-model";
+        }
+
+        @Override
+        public String getNickname() {
+            return "throwing-ml-model";
+        }
+
+        @Override
+        public Family getFamily() {
+            return Family.TENSORRT;
+        }
+
+        @Override
+        public ModelProperties getProperties() {
+            return new ModelProperties(
+                    Path.of("throwing-ml-model.onnx"),
+                    "throwing-ml-model",
+                    List.of("AprilTag"),
+                    640,
+                    640,
+                    Family.TENSORRT,
+                    Version.YOLOV8);
         }
     }
 }
