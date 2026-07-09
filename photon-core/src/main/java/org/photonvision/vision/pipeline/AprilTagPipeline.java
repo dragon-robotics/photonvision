@@ -29,6 +29,7 @@ import edu.wpi.first.math.util.Units;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import org.photonvision.common.configuration.NeuralNetworkModelManager;
 import org.photonvision.common.configuration.ConfigManager;
 import org.photonvision.common.dataflow.structures.Packet;
 import org.photonvision.common.logging.LogGroup;
@@ -39,11 +40,15 @@ import org.photonvision.targeting.MultiTargetPNPResult;
 import org.photonvision.vision.apriltag.AprilTagFamily;
 import org.photonvision.vision.frame.Frame;
 import org.photonvision.vision.frame.FrameThresholdType;
+import org.photonvision.vision.objects.Model;
 import org.photonvision.vision.pipe.CVPipe.CVPipeResult;
 import org.photonvision.vision.pipe.impl.AprilTagDetectionPipe;
 import org.photonvision.vision.pipe.impl.AprilTagDetectionPipe.AprilTagDetectionPipeParams;
+import org.photonvision.vision.pipe.impl.AprilTagMLHybridPipe;
 import org.photonvision.vision.pipe.impl.AprilTagPoseEstimatorPipe;
 import org.photonvision.vision.pipe.impl.AprilTagPoseEstimatorPipe.AprilTagPoseEstimatorPipeParams;
+import org.photonvision.vision.pipe.impl.AprilTagROIDecodePipe;
+import org.photonvision.vision.pipe.impl.AprilTagROIDetectionPipe;
 import org.photonvision.vision.pipe.impl.CalculateFPSPipe;
 import org.photonvision.vision.pipe.impl.MultiTargetPNPPipe;
 import org.photonvision.vision.pipe.impl.MultiTargetPNPPipe.MultiTargetPNPPipeParams;
@@ -54,22 +59,60 @@ import org.photonvision.vision.target.TrackedTarget.TargetCalculationParameters;
 public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipelineSettings> {
     private static final Logger logger = new Logger(AprilTagPipeline.class, LogGroup.VisionModule);
 
-    private final AprilTagDetectionPipe aprilTagDetectionPipe = new AprilTagDetectionPipe();
-    private final AprilTagPoseEstimatorPipe singleTagPoseEstimatorPipe =
-            new AprilTagPoseEstimatorPipe();
-    private final MultiTargetPNPPipe multiTagPNPPipe = new MultiTargetPNPPipe();
-    private final CalculateFPSPipe calculateFPSPipe = new CalculateFPSPipe();
+    private final AprilTagDetectionPipe aprilTagDetectionPipe;
+    private final AprilTagPoseEstimatorPipe singleTagPoseEstimatorPipe;
+    private final MultiTargetPNPPipe multiTagPNPPipe;
+    private final CalculateFPSPipe calculateFPSPipe;
+    private final AprilTagMLHybridPipe mlHybridPipe;
 
     private static final FrameThresholdType PROCESSING_TYPE = FrameThresholdType.GREYSCALE;
 
     public AprilTagPipeline() {
-        super(PROCESSING_TYPE);
-        settings = new AprilTagPipelineSettings();
+        this(new AprilTagPipelineSettings());
     }
 
     public AprilTagPipeline(AprilTagPipelineSettings settings) {
+        this(
+                settings,
+                new AprilTagDetectionPipe(),
+                new AprilTagMLHybridPipe(),
+                new AprilTagPoseEstimatorPipe(),
+                new MultiTargetPNPPipe(),
+                new CalculateFPSPipe());
+    }
+
+    AprilTagPipeline(
+            AprilTagPipelineSettings settings,
+            AprilTagDetectionPipe aprilTagDetectionPipe,
+            AprilTagMLHybridPipe mlHybridPipe,
+            AprilTagPoseEstimatorPipe singleTagPoseEstimatorPipe,
+            MultiTargetPNPPipe multiTagPNPPipe,
+            CalculateFPSPipe calculateFPSPipe) {
         super(PROCESSING_TYPE);
         this.settings = settings;
+        this.aprilTagDetectionPipe = aprilTagDetectionPipe;
+        this.mlHybridPipe = mlHybridPipe;
+        this.singleTagPoseEstimatorPipe = singleTagPoseEstimatorPipe;
+        this.multiTagPNPPipe = multiTagPNPPipe;
+        this.calculateFPSPipe = calculateFPSPipe;
+    }
+
+    Optional<Model> getMlModel() {
+        if (settings.mlModelName != null && !settings.mlModelName.isBlank()) {
+            return NeuralNetworkModelManager.getInstance().getModel(settings.mlModelName);
+        }
+
+        return NeuralNetworkModelManager.getInstance()
+                .getDefaultModel()
+                .filter(
+                        model -> {
+                            var properties = model.getProperties();
+                            if (properties == null) {
+                                return false;
+                            }
+                            return properties.labels().contains("AprilTag")
+                                    || properties.nickname().toLowerCase().contains("apriltag");
+                        });
     }
 
     @Override
@@ -108,6 +151,25 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
         aprilTagDetectionPipe.setParams(
                 new AprilTagDetectionPipeParams(settings.tagFamily, config, quadParams));
 
+        if (settings.useMLDetection) {
+            var selectedMlModel = getMlModel();
+            var detectionParams =
+                    new AprilTagROIDetectionPipe.AprilTagROIDetectionParams(
+                            selectedMlModel.orElse(null),
+                            settings.mlConfidenceThreshold,
+                            settings.mlNmsThreshold);
+            var decodeParams = new AprilTagROIDecodePipe.ROIDecodeParams();
+            decodeParams.tagFamily = settings.tagFamily;
+            decodeParams.detectorConfig = config;
+            decodeParams.quadParams = quadParams;
+            decodeParams.maxHammingDistance = settings.hammingDist;
+            decodeParams.minDecisionMargin = settings.decisionMargin;
+
+            mlHybridPipe.setParams(
+                    new AprilTagMLHybridPipe.Params(
+                            detectionParams, decodeParams, settings.mlRoiPaddingPixels));
+        }
+
         if (frameStaticProperties.cameraCalibration != null) {
             var cameraMatrix = frameStaticProperties.cameraCalibration.getCameraIntrinsicsMat();
             if (cameraMatrix != null && cameraMatrix.rows() > 0) {
@@ -139,11 +201,21 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
             return new CVPipelineResult(frame.sequenceID, 0, 0, List.of(), frame);
         }
 
-        CVPipeResult<List<AprilTagDetection>> tagDetectionPipeResult =
-                aprilTagDetectionPipe.run(frame.processedImage);
-        sumPipeNanosElapsed += tagDetectionPipeResult.nanosElapsed;
-
-        List<AprilTagDetection> detections = tagDetectionPipeResult.output;
+        List<AprilTagDetection> detections;
+        if (settings.useMLDetection && mlHybridPipe.isAvailable()) {
+            var mlResult = mlHybridPipe.run(frame);
+            detections = mlResult.output.detections();
+            sumPipeNanosElapsed += mlResult.nanosElapsed;
+            if (detections.isEmpty() && settings.mlFallbackToTraditional) {
+                var fallbackResult = aprilTagDetectionPipe.run(frame.processedImage);
+                sumPipeNanosElapsed += fallbackResult.nanosElapsed;
+                detections = fallbackResult.output;
+            }
+        } else {
+            var tagDetectionPipeResult = aprilTagDetectionPipe.run(frame.processedImage);
+            sumPipeNanosElapsed += tagDetectionPipeResult.nanosElapsed;
+            detections = tagDetectionPipeResult.output;
+        }
         List<AprilTagDetection> usedDetections = new ArrayList<>();
         List<TrackedTarget> targetList = new ArrayList<>();
 
@@ -253,6 +325,7 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
     @Override
     public void release() {
         aprilTagDetectionPipe.release();
+        mlHybridPipe.release();
         singleTagPoseEstimatorPipe.release();
         super.release();
     }

@@ -18,6 +18,7 @@
 package org.photonvision.vision.pipeline;
 
 import com.fasterxml.jackson.annotation.JsonTypeName;
+import java.util.Objects;
 import org.photonvision.vision.apriltag.AprilTagFamily;
 import org.photonvision.vision.target.TargetModel;
 
@@ -34,6 +35,13 @@ public class AprilTagPipelineSettings extends AdvancedPipelineSettings {
     public int decisionMargin = 35;
     public boolean doMultiTarget = false;
     public boolean doSingleTargetAlways = false;
+    public boolean useMLDetection = false;
+    public double mlConfidenceThreshold = 0.5;
+    public double mlNmsThreshold = 0.45;
+    public int mlRoiPaddingPixels = 40;
+    public boolean mlFallbackToTraditional = true;
+    public String mlModelName = null;
+    public boolean showDetectionBoxes = true;
 
     // 3d settings
 
@@ -63,6 +71,15 @@ public class AprilTagPipelineSettings extends AdvancedPipelineSettings {
         result = prime * result + decisionMargin;
         result = prime * result + (doMultiTarget ? 1231 : 1237);
         result = prime * result + (doSingleTargetAlways ? 1231 : 1237);
+        result = prime * result + (useMLDetection ? 1231 : 1237);
+        temp = Double.doubleToLongBits(mlConfidenceThreshold);
+        result = prime * result + (int) (temp ^ (temp >>> 32));
+        temp = Double.doubleToLongBits(mlNmsThreshold);
+        result = prime * result + (int) (temp ^ (temp >>> 32));
+        result = prime * result + mlRoiPaddingPixels;
+        result = prime * result + (mlFallbackToTraditional ? 1231 : 1237);
+        result = prime * result + Objects.hashCode(mlModelName);
+        result = prime * result + (showDetectionBoxes ? 1231 : 1237);
         return result;
     }
 
@@ -83,6 +100,15 @@ public class AprilTagPipelineSettings extends AdvancedPipelineSettings {
         if (decisionMargin != other.decisionMargin) return false;
         if (doMultiTarget != other.doMultiTarget) return false;
         if (doSingleTargetAlways != other.doSingleTargetAlways) return false;
+        if (useMLDetection != other.useMLDetection) return false;
+        if (Double.doubleToLongBits(mlConfidenceThreshold)
+                != Double.doubleToLongBits(other.mlConfidenceThreshold)) return false;
+        if (Double.doubleToLongBits(mlNmsThreshold) != Double.doubleToLongBits(other.mlNmsThreshold))
+            return false;
+        if (mlRoiPaddingPixels != other.mlRoiPaddingPixels) return false;
+        if (mlFallbackToTraditional != other.mlFallbackToTraditional) return false;
+        if (!Objects.equals(mlModelName, other.mlModelName)) return false;
+        if (showDetectionBoxes != other.showDetectionBoxes) return false;
         return true;
     }
 }
