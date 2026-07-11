@@ -38,22 +38,29 @@ Options:
 EOF
 }
 
-wait_for_photonvision() {
-    local deadline
+poll_photonvision_health() {
     local http_code
 
-    deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
-    while (( SECONDS < deadline )); do
+    while true; do
         if http_code="$(curl --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 1 --max-time 1 http://127.0.0.1:5800/)" \
             && [[ "${http_code}" == "200" ]]; then
             return 0
         fi
         sleep 1
     done
+}
 
+wait_for_photonvision() {
+    if timeout --signal=KILL "${HEALTH_TIMEOUT_SECONDS}s" bash -c 'source "$1"; poll_photonvision_health' bash "${BASH_SOURCE[0]}"; then
+        return 0
+    fi
     echo "PhotonVision health check failed after ${HEALTH_TIMEOUT_SECONDS} seconds." >&2
     return 1
 }
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
