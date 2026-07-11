@@ -43,6 +43,7 @@ import org.photonvision.vision.apriltag.AprilTagFamily;
 import org.photonvision.vision.calibration.CameraCalibrationCoefficients;
 import org.photonvision.vision.calibration.JsonMatOfDouble;
 import org.photonvision.vision.frame.Frame;
+import org.photonvision.vision.frame.FrameStaticProperties;
 import org.photonvision.vision.frame.FrameThresholdType;
 import org.photonvision.vision.objects.Model;
 import org.photonvision.vision.pipe.impl.AprilTagDetectionCudaPipe;
@@ -73,6 +74,8 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
     private final MultiTargetPNPPipe multiTagPNPPipe;
     private final CalculateFPSPipe calculateFPSPipe;
     private final AprilTagMLHybridPipe mlHybridPipe;
+    private FrameStaticProperties currentTargetCalculationProperties;
+    private boolean currentPoseProcessingAllowed = true;
 
     private static final FrameThresholdType PROCESSING_TYPE = FrameThresholdType.GREYSCALE;
 
@@ -189,28 +192,61 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
                             detectionParams, decodeParams, settings.mlRoiPaddingPixels));
         }
 
-        var validatedCalibration = getValidatedCalibration(frameStaticProperties.cameraCalibration);
-        if (validatedCalibration.isEmpty() && frameStaticProperties.cameraCalibration != null) {
-            frameStaticProperties.cameraCalibration = null;
-        }
         if (cudaEnabled) {
+            var validatedCalibration = getValidatedCalibration(frameStaticProperties.cameraCalibration);
             cudaDetectionPipe.setCalibration(validatedCalibration.orElse(DEFAULT_CUDA_CALIBRATION));
+            currentPoseProcessingAllowed = validatedCalibration.isPresent();
+            currentTargetCalculationProperties =
+                    currentPoseProcessingAllowed
+                            ? frameStaticProperties
+                            : new FrameStaticProperties(
+                                    frameStaticProperties.imageWidth,
+                                    frameStaticProperties.imageHeight,
+                                    frameStaticProperties.fov,
+                                    null);
+            if (validatedCalibration.isPresent()) {
+                var calibration = validatedCalibration.get();
+                setPoseEstimatorParams(
+                        tagWidth,
+                        tagModel,
+                        frameStaticProperties.cameraCalibration,
+                        calibration.fx(),
+                        calibration.fy(),
+                        calibration.cx(),
+                        calibration.cy());
+            }
+        } else {
+            currentPoseProcessingAllowed = true;
+            currentTargetCalculationProperties = frameStaticProperties;
+            if (frameStaticProperties.cameraCalibration != null) {
+                var cameraMatrix = frameStaticProperties.cameraCalibration.getCameraIntrinsicsMat();
+                if (cameraMatrix != null && cameraMatrix.rows() > 0) {
+                    var cx = cameraMatrix.get(0, 2)[0];
+                    var cy = cameraMatrix.get(1, 2)[0];
+                    var fx = cameraMatrix.get(0, 0)[0];
+                    var fy = cameraMatrix.get(1, 1)[0];
+                    setPoseEstimatorParams(
+                            tagWidth, tagModel, frameStaticProperties.cameraCalibration, fx, fy, cx, cy);
+                }
+            }
         }
+    }
 
-        if (validatedCalibration.isPresent()) {
-            var calibration = validatedCalibration.get();
-            singleTagPoseEstimatorPipe.setParams(
-                    new AprilTagPoseEstimatorPipeParams(
-                            new Config(
-                                    tagWidth, calibration.fx(), calibration.fy(), calibration.cx(), calibration.cy()),
-                            frameStaticProperties.cameraCalibration,
-                            settings.numIterations));
+    private void setPoseEstimatorParams(
+            double tagWidth,
+            TargetModel tagModel,
+            CameraCalibrationCoefficients calibration,
+            double fx,
+            double fy,
+            double cx,
+            double cy) {
+        singleTagPoseEstimatorPipe.setParams(
+                new AprilTagPoseEstimatorPipeParams(
+                        new Config(tagWidth, fx, fy, cx, cy), calibration, settings.numIterations));
 
-            // TODO global state ew
-            var atfl = ConfigManager.getInstance().getConfig().getApriltagFieldLayout();
-            multiTagPNPPipe.setParams(
-                    new MultiTargetPNPPipeParams(frameStaticProperties.cameraCalibration, atfl, tagModel));
-        }
+        // TODO global state ew
+        var atfl = ConfigManager.getInstance().getConfig().getApriltagFieldLayout();
+        multiTagPNPPipe.setParams(new MultiTargetPNPPipeParams(calibration, atfl, tagModel));
     }
 
     private static Optional<Calibration> getValidatedCalibration(
@@ -337,21 +373,21 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
                             detection,
                             null,
                             new TargetCalculationParameters(
-                                    false, null, null, null, null, frameStaticProperties));
+                                    false, null, null, null, null, currentTargetCalculationProperties));
 
             targetList.add(target);
         }
 
         // Do multi-tag pose estimation
         Optional<MultiTargetPNPResult> multiTagResult = Optional.empty();
-        if (settings.solvePNPEnabled && settings.doMultiTarget) {
+        if (settings.solvePNPEnabled && currentPoseProcessingAllowed && settings.doMultiTarget) {
             var multiTagOutput = multiTagPNPPipe.run(targetList);
             sumPipeNanosElapsed += multiTagOutput.nanosElapsed;
             multiTagResult = multiTagOutput.output;
         }
 
         // Do single-tag pose estimation
-        if (settings.solvePNPEnabled) {
+        if (settings.solvePNPEnabled && currentPoseProcessingAllowed) {
             // Clear target list that was used for multitag so we can add target transforms
             targetList.clear();
             // TODO global state again ew
@@ -395,7 +431,7 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
                                 detection,
                                 tagPoseEstimate,
                                 new TargetCalculationParameters(
-                                        false, null, null, null, null, frameStaticProperties));
+                                        false, null, null, null, null, currentTargetCalculationProperties));
 
                 var correctedBestPose =
                         MathUtils.convertOpenCVtoPhotonTransform(target.getBestCameraToTarget3d());

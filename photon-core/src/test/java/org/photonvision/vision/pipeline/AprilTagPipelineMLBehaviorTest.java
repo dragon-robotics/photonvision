@@ -21,10 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.wpi.first.apriltag.AprilTagDetection;
+import edu.wpi.first.apriltag.AprilTagPoseEstimate;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -42,6 +44,7 @@ import org.photonvision.common.configuration.ConfigManager;
 import org.photonvision.common.configuration.NeuralNetworkModelManager.Family;
 import org.photonvision.common.configuration.NeuralNetworkModelManager.Version;
 import org.photonvision.common.configuration.NeuralNetworkModelsSettings.ModelProperties;
+import org.photonvision.targeting.MultiTargetPNPResult;
 import org.photonvision.vision.apriltag.AprilTagFamily;
 import org.photonvision.vision.calibration.CameraCalibrationCoefficients;
 import org.photonvision.vision.calibration.CameraLensModel;
@@ -60,9 +63,12 @@ import org.photonvision.vision.pipe.impl.AprilTagDetectionCudaPipe.Calibration;
 import org.photonvision.vision.pipe.impl.AprilTagDetectionPipe;
 import org.photonvision.vision.pipe.impl.AprilTagMLHybridPipe;
 import org.photonvision.vision.pipe.impl.AprilTagPoseEstimatorPipe;
+import org.photonvision.vision.pipe.impl.AprilTagPoseEstimatorPipe.AprilTagPoseEstimatorPipeParams;
 import org.photonvision.vision.pipe.impl.CalculateFPSPipe;
 import org.photonvision.vision.pipe.impl.MLDetectionResult;
 import org.photonvision.vision.pipe.impl.MultiTargetPNPPipe;
+import org.photonvision.vision.pipe.impl.MultiTargetPNPPipe.MultiTargetPNPPipeParams;
+import org.photonvision.vision.target.TrackedTarget;
 
 public class AprilTagPipelineMLBehaviorTest {
     private static final Calibration CUDA_IDENTITY_CALIBRATION =
@@ -362,6 +368,170 @@ public class AprilTagPipelineMLBehaviorTest {
         pipeline.release();
     }
 
+    @Test
+    public void initialMalformedCudaCalibrationSkipsAllPoseProcessingWithoutMutation() {
+        var cudaPipe = new FakeAprilTagDetectionCudaPipe();
+        cudaPipe.available = false;
+        var posePipe = new FakeAprilTagPoseEstimatorPipe();
+        var multiTagPipe = new FakeMultiTargetPNPPipe();
+        var pipeline =
+                newPoseTestPipeline(
+                        cudaPipe,
+                        new FakeAprilTagDetectionPipe(List.of(makeDetection(15))),
+                        posePipe,
+                        multiTagPipe);
+        pipeline.getSettings().useCudaTagDetection = true;
+        pipeline.getSettings().useMLDetection = false;
+        pipeline.getSettings().solvePNPEnabled = true;
+        pipeline.getSettings().doMultiTarget = true;
+        var malformedCalibration =
+                makeCalibration(new JsonMatOfDouble(1, 1, new double[] {700}), validDistortion());
+        var frameProperties = framePropertiesWithUncheckedCalibration(malformedCalibration);
+        var frame = makeFrame(frameProperties);
+
+        var result = assertDoesNotThrow(() -> pipeline.run(frame, QuirkyCamera.DefaultCamera));
+
+        assertSame(malformedCalibration, frameProperties.cameraCalibration);
+        assertEquals(CUDA_IDENTITY_CALIBRATION, cudaPipe.lastCalibration);
+        assertEquals(0, posePipe.setParamsCount);
+        assertEquals(0, posePipe.runCount);
+        assertEquals(0, multiTagPipe.setParamsCount);
+        assertEquals(0, multiTagPipe.runCount);
+        assertEquals(1, result.targets.size());
+        result.release();
+        frame.release();
+        malformedCalibration.release();
+        pipeline.release();
+    }
+
+    @Test
+    public void validToMalformedCudaCalibrationDoesNotUseStalePoseParams() {
+        var cudaPipe = new FakeAprilTagDetectionCudaPipe();
+        cudaPipe.available = false;
+        var posePipe = new FakeAprilTagPoseEstimatorPipe();
+        var multiTagPipe = new FakeMultiTargetPNPPipe();
+        var pipeline =
+                newPoseTestPipeline(
+                        cudaPipe,
+                        new FakeAprilTagDetectionPipe(List.of(makeDetection(16))),
+                        posePipe,
+                        multiTagPipe);
+        pipeline.getSettings().useCudaTagDetection = true;
+        pipeline.getSettings().useMLDetection = false;
+        pipeline.getSettings().solvePNPEnabled = true;
+        pipeline.getSettings().doMultiTarget = true;
+        var validCalibration = makeCalibration(validIntrinsics(), validDistortion());
+        var malformedCalibration =
+                makeCalibration(new JsonMatOfDouble(1, 1, new double[] {700}), validDistortion());
+
+        var validFrame = makeFrame(validCalibration);
+        var validResult = pipeline.run(validFrame, QuirkyCamera.DefaultCamera);
+        validResult.release();
+        validFrame.release();
+
+        var malformedProperties = framePropertiesWithUncheckedCalibration(malformedCalibration);
+        var malformedFrame = makeFrame(malformedProperties);
+        var malformedResult =
+                assertDoesNotThrow(() -> pipeline.run(malformedFrame, QuirkyCamera.DefaultCamera));
+
+        assertSame(malformedCalibration, malformedProperties.cameraCalibration);
+        assertEquals(1, posePipe.setParamsCount);
+        assertEquals(1, posePipe.runCount);
+        assertEquals(1, multiTagPipe.setParamsCount);
+        assertEquals(1, multiTagPipe.runCount);
+        malformedResult.release();
+        malformedFrame.release();
+        validCalibration.release();
+        malformedCalibration.release();
+        pipeline.release();
+    }
+
+    @Test
+    public void malformedToValidCudaCalibrationRefreshesAndRestoresPoseProcessing() {
+        var cudaPipe = new FakeAprilTagDetectionCudaPipe();
+        cudaPipe.available = false;
+        var posePipe = new FakeAprilTagPoseEstimatorPipe();
+        var multiTagPipe = new FakeMultiTargetPNPPipe();
+        var pipeline =
+                newPoseTestPipeline(
+                        cudaPipe,
+                        new FakeAprilTagDetectionPipe(List.of(makeDetection(17))),
+                        posePipe,
+                        multiTagPipe);
+        pipeline.getSettings().useCudaTagDetection = true;
+        pipeline.getSettings().useMLDetection = false;
+        pipeline.getSettings().solvePNPEnabled = true;
+        pipeline.getSettings().doMultiTarget = true;
+        var malformedCalibration =
+                makeCalibration(new JsonMatOfDouble(1, 1, new double[] {700}), validDistortion());
+        var validCalibration = makeCalibration(validIntrinsics(), validDistortion());
+        var malformedProperties = framePropertiesWithUncheckedCalibration(malformedCalibration);
+
+        var malformedFrame = makeFrame(malformedProperties);
+        var malformedResult = pipeline.run(malformedFrame, QuirkyCamera.DefaultCamera);
+        malformedResult.release();
+        malformedFrame.release();
+
+        var validFrame = makeFrame(validCalibration);
+        var validResult = pipeline.run(validFrame, QuirkyCamera.DefaultCamera);
+
+        assertSame(malformedCalibration, malformedProperties.cameraCalibration);
+        assertEquals(1, posePipe.setParamsCount);
+        assertEquals(1, posePipe.runCount);
+        assertEquals(1, multiTagPipe.setParamsCount);
+        assertEquals(1, multiTagPipe.runCount);
+        assertEquals(
+                List.of(
+                        CUDA_IDENTITY_CALIBRATION,
+                        new Calibration(700, 710, 320, 240, 0.1, -0.2, 0.003, -0.004, 0.05)),
+                cudaPipe.calibrationUpdates);
+        validResult.release();
+        validFrame.release();
+        malformedCalibration.release();
+        validCalibration.release();
+        pipeline.release();
+    }
+
+    @Test
+    public void disablingCudaAfterInvalidCalibrationRestoresCpuOnlyPoseBehavior() {
+        var cudaPipe = new FakeAprilTagDetectionCudaPipe();
+        cudaPipe.available = false;
+        var posePipe = new FakeAprilTagPoseEstimatorPipe();
+        var multiTagPipe = new FakeMultiTargetPNPPipe();
+        var pipeline =
+                newPoseTestPipeline(
+                        cudaPipe, new FakeAprilTagDetectionPipe(List.of()), posePipe, multiTagPipe);
+        pipeline.getSettings().useCudaTagDetection = true;
+        pipeline.getSettings().useMLDetection = false;
+        pipeline.getSettings().solvePNPEnabled = true;
+        pipeline.getSettings().doMultiTarget = true;
+        var cpuAcceptedCalibration =
+                makeCalibration(
+                        validIntrinsics(), new JsonMatOfDouble(2, 2, new double[] {0.1, 0.2, 0.3, 0.4}));
+
+        var cudaFrameProperties = framePropertiesWithUncheckedCalibration(cpuAcceptedCalibration);
+        var cudaFrame = makeFrame(cudaFrameProperties);
+        var cudaResult = pipeline.run(cudaFrame, QuirkyCamera.DefaultCamera);
+        cudaResult.release();
+        cudaFrame.release();
+
+        pipeline.getSettings().useCudaTagDetection = false;
+        var cpuFrameProperties = framePropertiesWithUncheckedCalibration(cpuAcceptedCalibration);
+        var cpuFrame = makeFrame(cpuFrameProperties);
+        var cpuResult = pipeline.run(cpuFrame, QuirkyCamera.DefaultCamera);
+
+        assertSame(cpuAcceptedCalibration, cudaFrameProperties.cameraCalibration);
+        assertSame(cpuAcceptedCalibration, cpuFrameProperties.cameraCalibration);
+        assertEquals(1, posePipe.setParamsCount);
+        assertEquals(0, posePipe.runCount);
+        assertEquals(1, multiTagPipe.setParamsCount);
+        assertEquals(1, multiTagPipe.runCount);
+        cpuResult.release();
+        cpuFrame.release();
+        cpuAcceptedCalibration.release();
+        pipeline.release();
+    }
+
     private static void assertMalformedCalibrationFallsBackToCpu(
             TestAprilTagPipeline pipeline,
             FakeAprilTagDetectionCudaPipe cudaPipe,
@@ -372,6 +542,7 @@ public class AprilTagPipelineMLBehaviorTest {
 
         var result = assertDoesNotThrow(() -> pipeline.run(frame, QuirkyCamera.DefaultCamera));
 
+        assertSame(calibration, frameStaticProperties.cameraCalibration);
         assertEquals(CUDA_IDENTITY_CALIBRATION, cudaPipe.lastCalibration);
         assertEquals(1, result.targets.size());
         result.release();
@@ -497,6 +668,20 @@ public class AprilTagPipelineMLBehaviorTest {
                 mlModels);
     }
 
+    private static TestAprilTagPipeline newPoseTestPipeline(
+            FakeAprilTagDetectionCudaPipe cudaPipe,
+            AprilTagDetectionPipe aprilTagDetectionPipe,
+            FakeAprilTagPoseEstimatorPipe posePipe,
+            FakeMultiTargetPNPPipe multiTagPipe) {
+        return new TestAprilTagPipeline(
+                cudaPipe,
+                aprilTagDetectionPipe,
+                new FakeAprilTagMLHybridPipe(),
+                posePipe,
+                multiTagPipe,
+                new CalculateFPSPipe());
+    }
+
     private static AprilTagDetection makeDetection(int id) {
         return new AprilTagDetection(
                 "tag36h11",
@@ -524,6 +709,13 @@ public class AprilTagPipelineMLBehaviorTest {
                 new CVMat(Mat.zeros(480, 640, CvType.CV_8UC1)),
                 FrameThresholdType.GREYSCALE,
                 frameStaticProperties);
+    }
+
+    private static FrameStaticProperties framePropertiesWithUncheckedCalibration(
+            CameraCalibrationCoefficients calibration) {
+        var frameStaticProperties = new FrameStaticProperties(640, 480, 70, null);
+        frameStaticProperties.cameraCalibration = calibration;
+        return frameStaticProperties;
     }
 
     private static CameraCalibrationCoefficients makeCalibration(
@@ -636,6 +828,45 @@ public class AprilTagPipelineMLBehaviorTest {
         @Override
         public void release() {
             releaseCount++;
+        }
+    }
+
+    private static final class FakeAprilTagPoseEstimatorPipe extends AprilTagPoseEstimatorPipe {
+        private int setParamsCount;
+        private int runCount;
+
+        @Override
+        public void setParams(AprilTagPoseEstimatorPipeParams newParams) {
+            setParamsCount++;
+        }
+
+        @Override
+        public CVPipeResult<AprilTagPoseEstimate> run(AprilTagDetection detection) {
+            runCount++;
+            var result = new CVPipeResult<AprilTagPoseEstimate>();
+            result.output = null;
+            return result;
+        }
+
+        @Override
+        public void release() {}
+    }
+
+    private static final class FakeMultiTargetPNPPipe extends MultiTargetPNPPipe {
+        private int setParamsCount;
+        private int runCount;
+
+        @Override
+        public void setParams(MultiTargetPNPPipeParams newParams) {
+            setParamsCount++;
+        }
+
+        @Override
+        public CVPipeResult<Optional<MultiTargetPNPResult>> run(List<TrackedTarget> targets) {
+            runCount++;
+            var result = new CVPipeResult<Optional<MultiTargetPNPResult>>();
+            result.output = Optional.empty();
+            return result;
         }
     }
 
