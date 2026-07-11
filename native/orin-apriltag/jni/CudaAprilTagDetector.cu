@@ -88,6 +88,21 @@ void ValidateFrame(const GrayFrame& frame, int width, int height) {
           frame.stride_bytes) {
     throw std::overflow_error("Gray frame buffer size overflows size_t");
   }
+  const std::size_t span_bytes =
+      rows_before_last * frame.stride_bytes + row_bytes;
+  if (span_bytes > static_cast<std::size_t>(
+                       std::numeric_limits<std::ptrdiff_t>::max())) {
+    throw std::overflow_error("Gray frame span exceeds PTRDIFF_MAX");
+  }
+  const std::size_t last_offset = span_bytes - 1;
+  if (last_offset > std::numeric_limits<std::uintptr_t>::max()) {
+    throw std::overflow_error("Gray frame address range exceeds UINTPTR_MAX");
+  }
+  const auto base = reinterpret_cast<std::uintptr_t>(frame.data);
+  if (base > std::numeric_limits<std::uintptr_t>::max() -
+                 static_cast<std::uintptr_t>(last_offset)) {
+    throw std::overflow_error("Gray frame address range exceeds UINTPTR_MAX");
+  }
 }
 
 Detection CopyDetection(const apriltag_detection_t& native) {

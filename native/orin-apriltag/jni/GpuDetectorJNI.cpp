@@ -3,6 +3,7 @@
 #include <cuda_runtime_api.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -105,7 +106,7 @@ std::int64_t CheckedHandle(jlong handle) {
   return static_cast<std::int64_t>(handle);
 }
 
-const std::uint8_t* CheckedAddress(jlong address) {
+const std::uint8_t* CheckedAddress(jlong address, std::size_t span_bytes) {
   if (address <= 0) {
     throw std::invalid_argument("Grayscale image address must be nonzero");
   }
@@ -113,8 +114,15 @@ const std::uint8_t* CheckedAddress(jlong address) {
   if (value > std::numeric_limits<std::uintptr_t>::max()) {
     throw std::overflow_error("Grayscale image address is out of range");
   }
-  return reinterpret_cast<const std::uint8_t*>(
-      static_cast<std::uintptr_t>(value));
+  const auto base = static_cast<std::uintptr_t>(value);
+  const std::size_t last_offset = span_bytes - 1;
+  if (last_offset > std::numeric_limits<std::uintptr_t>::max() ||
+      base > std::numeric_limits<std::uintptr_t>::max() -
+                 static_cast<std::uintptr_t>(last_offset)) {
+    throw std::overflow_error(
+        "Grayscale image address range exceeds UINTPTR_MAX");
+  }
+  return reinterpret_cast<const std::uint8_t*>(base);
 }
 
 std::size_t CheckedStride(jlong stride, jint width) {
@@ -130,6 +138,29 @@ std::size_t CheckedStride(jlong stride, jint width) {
         "Grayscale image width must be positive and no greater than stride");
   }
   return static_cast<std::size_t>(value);
+}
+
+std::size_t CheckedFrameSpan(jint width, jint height,
+                             std::size_t stride_bytes) {
+  if (width <= 0) {
+    throw std::invalid_argument("Grayscale image width must be positive");
+  }
+  if (height <= 0) {
+    throw std::invalid_argument("Grayscale image height must be positive");
+  }
+  const auto row_bytes = static_cast<std::size_t>(width);
+  const auto rows_before_last = static_cast<std::size_t>(height - 1);
+  if (rows_before_last >
+      (std::numeric_limits<std::size_t>::max() - row_bytes) / stride_bytes) {
+    throw std::overflow_error("Grayscale image span overflows size_t");
+  }
+  const std::size_t span_bytes =
+      rows_before_last * stride_bytes + row_bytes;
+  if (span_bytes > static_cast<std::size_t>(
+                       std::numeric_limits<std::ptrdiff_t>::max())) {
+    throw std::overflow_error("Grayscale image span exceeds PTRDIFF_MAX");
+  }
+  return span_bytes;
 }
 
 jlong CheckedJlong(std::size_t value) {
@@ -238,6 +269,7 @@ using photon::cuda_apriltag::BuildDetectionArray;
 using photon::cuda_apriltag::Cache;
 using photon::cuda_apriltag::Calibration;
 using photon::cuda_apriltag::CheckedAddress;
+using photon::cuda_apriltag::CheckedFrameSpan;
 using photon::cuda_apriltag::CheckedHandle;
 using photon::cuda_apriltag::CheckedJlong;
 using photon::cuda_apriltag::CheckedStride;
@@ -318,13 +350,13 @@ Java_org_photonvision_jni_GpuDetectorJNI_processGray(
     JNIEnv* env, jclass, jlong handle, jlong address, jint width, jint height,
     jlong stride) {
   return GuardJni<jobjectArray>(env, nullptr, [&] {
-    if (height <= 0) {
-      throw std::invalid_argument("Grayscale image height must be positive");
-    }
-    const GrayFrame frame{CheckedAddress(address), width, height,
-                          CheckedStride(stride, width)};
-    return BuildDetectionArray(env,
-                               Registry().Process(CheckedHandle(handle), frame));
+    const std::int64_t checked_handle = CheckedHandle(handle);
+    const std::size_t checked_stride = CheckedStride(stride, width);
+    const std::size_t span_bytes =
+        CheckedFrameSpan(width, height, checked_stride);
+    const GrayFrame frame{CheckedAddress(address, span_bytes), width, height,
+                          checked_stride};
+    return BuildDetectionArray(env, Registry().Process(checked_handle, frame));
   });
 }
 

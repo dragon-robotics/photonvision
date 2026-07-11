@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -23,6 +24,23 @@ void CheckCuda(cudaError_t status, const char* expression) {
 }
 
 #define TEST_CHECK_CUDA(expression) CheckCuda((expression), #expression)
+
+template <typename Callable>
+void ExpectOverflow(const char* expected_message, Callable callable) {
+  try {
+    callable();
+  } catch (const std::overflow_error& error) {
+    if (error.what() == std::string(expected_message)) {
+      return;
+    }
+    throw std::runtime_error(std::string("Unexpected overflow error: ") +
+                             error.what());
+  } catch (const std::exception& error) {
+    throw std::runtime_error(std::string("Expected overflow error, got: ") +
+                             error.what());
+  }
+  throw std::runtime_error("Expected overflow error was not thrown");
+}
 
 }  // namespace
 
@@ -53,6 +71,37 @@ int main() {
     {
       photon::cuda_apriltag::CudaAprilTagDetector detector(kWidth, kHeight,
                                                             kDecimate);
+      const auto maximum_pointer_span = static_cast<std::size_t>(
+          std::numeric_limits<std::ptrdiff_t>::max());
+      const auto rows_before_last = static_cast<std::size_t>(kHeight - 1);
+      const std::size_t oversized_stride =
+          (maximum_pointer_span - static_cast<std::size_t>(kWidth)) /
+              rows_before_last +
+          1;
+      const photon::cuda_apriltag::GrayFrame oversized_span_frame{
+          .data = pixels.data(),
+          .width = kWidth,
+          .height = kHeight,
+          .stride_bytes = oversized_stride,
+      };
+      ExpectOverflow("Gray frame span exceeds PTRDIFF_MAX", [&] {
+        detector.Process(oversized_span_frame);
+      });
+
+      constexpr std::size_t kContiguousSpan =
+          static_cast<std::size_t>(kWidth) * kHeight;
+      const auto near_maximum_address =
+          std::numeric_limits<std::uintptr_t>::max() - (kContiguousSpan - 2);
+      const photon::cuda_apriltag::GrayFrame wrapped_address_frame{
+          .data = reinterpret_cast<const std::uint8_t*>(near_maximum_address),
+          .width = kWidth,
+          .height = kHeight,
+          .stride_bytes = static_cast<std::size_t>(kWidth),
+      };
+      ExpectOverflow("Gray frame address range exceeds UINTPTR_MAX", [&] {
+        detector.Process(wrapped_address_frame);
+      });
+
       detector.SetCalibration({
           .fx = 1000.0,
           .fy = 1000.0,
