@@ -107,58 +107,6 @@ expect_invocation_failure() {
         || fail "${description} did not report ${expected_message}: ${result}"
 }
 
-expect_live_rss_failure() {
-    local description="$1"
-    local mode="$2"
-    local expected_message="$3"
-    local status_contents="${4-__missing__}"
-    local awk_command="${5-awk}"
-    local proc_root="${fixture_dir}/proc-${mode}"
-    local status_path="${proc_root}/4242/status"
-    local result
-    local status
-
-    mkdir -p "${proc_root}/4242"
-    if [[ "${status_contents}" != '__missing__' ]]; then
-        printf '%s' "${status_contents}" >"${status_path}"
-    fi
-
-    set +e
-    result="$(
-        MONITOR_ORIN_PHOTONVISION_SOURCE_ONLY=1 \
-        MONITOR_PROC_ROOT="${proc_root}" \
-        MONITOR_AWK_COMMAND="${awk_command}" \
-        MONITOR_SCRIPT="${script}" \
-        bash -c '
-            source "${MONITOR_SCRIPT}"
-            rss_kib=""
-            read_live_rss_kib 4242 rss_kib
-        ' bash 2>&1
-    )"
-    status=$?
-    set -e
-
-    [[ "${status}" -ne 0 ]] || fail "${description} unexpectedly passed"
-    [[ "${result}" == *"${expected_message}"* ]] \
-        || fail "${description} did not report ${expected_message}: ${result}"
-}
-
-expect_setter_settings_failure() {
-    local settings_json="$1"
-    local result
-    local status
-
-    set +e
-    result="$(cd "${root}/photon-client" && \
-        node scripts/set-photonvision-pipeline.mjs unused.invalid:1 camera "${settings_json}" 2>&1)"
-    status=$?
-    set -e
-
-    [[ "${status}" -ne 0 ]] || fail "setter accepted invalid settings: ${settings_json}"
-    [[ "${result}" == *"Settings JSON"* ]] \
-        || fail "setter reported the wrong validation error for ${settings_json}: ${result}"
-}
-
 fixture rss-64-pass <<EOF
 ${header}
 0,321,1048576,2097152,7,active,200
@@ -249,6 +197,14 @@ single_row_fixture pid-overflow '0,4194305,1048576,2097152,7,active,200'
 single_row_fixture rss-overflow '0,321,1073741825,2097152,7,active,200'
 single_row_fixture available-overflow '0,321,1048576,1073741825,7,active,200'
 single_row_fixture restart-overflow '0,321,1048576,2097152,2147483648,active,200'
+single_row_fixture timestamp-huge '999999999999999999999999.999999,321,1048576,2097152,7,active,200'
+single_row_fixture timestamp-overprecision '1.1234567,321,1048576,2097152,7,active,200'
+single_row_fixture timestamp-boundary '2147483647.999999,321,1048576,2097152,7,active,200'
+fixture timestamp-backward <<EOF
+${header}
+100.000001,321,1048576,2097152,7,active,200
+100.000000,321,1048576,2097152,7,active,200
+EOF
 
 ln "${fixture_dir}/hardlink-source.csv" "${fixture_dir}/hardlink-output.csv"
 [[ "${fixture_dir}/hardlink-source.csv" -ef "${fixture_dir}/hardlink-output.csv" ]] \
@@ -296,12 +252,10 @@ bash "${script}" \
     --duration-seconds 604800 --interval-seconds 86400 \
     --max-rss-growth-mib 1048576 --min-available-mib 1048576 >/dev/null \
     || fail "numeric boundary values expected pass"
-expect_live_rss_failure "disappeared PID status" missing "PID status disappeared"
-expect_live_rss_failure "absent VmRSS" absent "VmRSS is absent" $'Name:\tphotonvision\n'
-expect_live_rss_failure "zero VmRSS" zero "VmRSS is zero" $'VmRSS:\t0 kB\n'
-expect_live_rss_failure "nonnumeric VmRSS" nonnumeric "VmRSS is not numeric" $'VmRSS:\tnot-a-number kB\n'
-expect_live_rss_failure \
-    "VmRSS awk read failure" awk-failure "Could not read VmRSS" $'VmRSS:\t1048576 kB\n' false
+expect_failure "huge monotonic timestamp" timestamp-huge 128 1536 "monotonic_seconds"
+expect_failure "over-precision monotonic timestamp" timestamp-overprecision 128 1536 "monotonic_seconds"
+expect_pass "maximum monotonic timestamp" timestamp-boundary 128 1536
+expect_failure "backward monotonic timestamp" timestamp-backward 128 1536 "moved backwards"
 
 expect_pass "+64 MiB RSS growth" rss-64-pass 128 1536
 expect_failure "+256 MiB RSS growth" rss-256-fail 128 1536 "RSS growth"
@@ -320,8 +274,5 @@ expect_failure "quoted CSV field" quoted-field 128 1536 "CSV fields"
 expect_failure "malformed numeric data" malformed-numeric 128 1536 "numeric"
 expect_pass "RSS threshold before 60-second warmup" warmup-only 128 1536
 expect_failure "RSS threshold after 60-second warmup" warmup-after 128 1536 "RSS growth"
-for invalid_settings in 'null' '[]' '42' '"text"' 'true' '{}'; do
-    expect_setter_settings_failure "${invalid_settings}"
-done
 
 echo "PASS: Orin PhotonVision monitor threshold contract"

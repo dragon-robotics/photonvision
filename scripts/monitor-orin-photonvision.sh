@@ -5,8 +5,7 @@ readonly HEADER='monotonic_seconds,pid,rss_kib,available_kib,restart_count,activ
 readonly ROW_PATTERN='^[^,"]+(,[^,"]+){6}$'
 readonly SERVICE='photonvision.service'
 readonly WARMUP_SECONDS=60
-readonly PROC_ROOT="${MONITOR_PROC_ROOT:-/proc}"
-readonly AWK_COMMAND="${MONITOR_AWK_COMMAND:-awk}"
+readonly MAX_MONOTONIC_SECONDS='2147483647'
 readonly MAX_DURATION_SECONDS='604800'
 readonly MAX_INTERVAL_SECONDS='86400'
 readonly MAX_THRESHOLD_MIB='1048576'
@@ -170,8 +169,24 @@ emit_row() {
     fi
 }
 
-is_decimal() {
-    [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]
+validate_monotonic_seconds() {
+    local name="$1"
+    local raw_value="$2"
+    local destination_name="$3"
+    local integer_part fraction_part normalized
+    local -n destination="${destination_name}"
+
+    [[ "${raw_value}" =~ ^([0-9]+)([.]([0-9]{1,6}))?$ ]] \
+        || fail "Invalid ${name}: expected seconds with at most 6 fractional digits"
+    integer_part="${BASH_REMATCH[1]}"
+    fraction_part="${BASH_REMATCH[3]-}"
+    validate_bounded_nonnegative_integer \
+        "${name}" "${integer_part}" "${MAX_MONOTONIC_SECONDS}" integer_part
+    normalized="${integer_part}"
+    if [[ -n "${fraction_part}" ]]; then
+        normalized="${normalized}.${fraction_part}"
+    fi
+    destination="${normalized}"
 }
 
 elapsed_from_start() {
@@ -192,7 +207,8 @@ process_row() {
         || fail "Malformed row ${line_number}: expected exactly seven unquoted, nonempty CSV fields"
     IFS=',' read -r monotonic_seconds pid rss_kib available_kib restart_count active_state http_status <<<"${row}"
 
-    is_decimal "${monotonic_seconds}" || fail "Malformed numeric data in row ${line_number}: monotonic_seconds"
+    validate_monotonic_seconds \
+        "row ${line_number} monotonic_seconds" "${monotonic_seconds}" monotonic_seconds
     validate_bounded_nonnegative_integer \
         "row ${line_number} pid" "${pid}" "${MAX_PID}" pid
     validate_bounded_nonnegative_integer \
@@ -273,7 +289,9 @@ evaluate_samples_file() {
 }
 
 read_monotonic_seconds() {
-    awk '{ printf "%.6f", $1 }' "${PROC_ROOT}/uptime"
+    local monotonic_seconds ignored
+    IFS=' ' read -r monotonic_seconds ignored </proc/uptime || return 1
+    printf '%s' "${monotonic_seconds}"
 }
 
 read_live_rss_kib() {
@@ -284,10 +302,10 @@ read_live_rss_kib() {
 
     [[ "${pid}" =~ ^[0-9]+$ ]] || fail "PhotonVision PID is invalid or missing: ${pid:-missing}"
     validate_bounded_positive_integer 'live PhotonVision PID' "${pid}" "${MAX_PID}" pid
-    status_file="${PROC_ROOT}/${pid}/status"
+    status_file="/proc/${pid}/status"
     [[ -f "${status_file}" && -r "${status_file}" ]] \
         || fail "PhotonVision PID status disappeared: ${status_file}"
-    if ! raw_rss_kib="$("${AWK_COMMAND}" '/^VmRSS:/ { print $2; exit }' "${status_file}" 2>/dev/null)"; then
+    if ! raw_rss_kib="$(awk '/^VmRSS:/ { print $2; exit }' "${status_file}" 2>/dev/null)"; then
         fail "Could not read VmRSS from PhotonVision PID status: ${status_file}"
     fi
     [[ -n "${raw_rss_kib}" ]] || fail "VmRSS is absent from PhotonVision PID status: ${status_file}"
@@ -307,7 +325,7 @@ collect_live_sample() {
         || fail "PhotonVision service is not active: ${active_state:-unknown}"
     pid="$(systemctl show --property=MainPID --value "${SERVICE}" 2>/dev/null || true)"
     restart_count="$(systemctl show --property=NRestarts --value "${SERVICE}" 2>/dev/null || true)"
-    if ! available_kib="$(awk '/^MemAvailable:/ { print $2; exit }' "${PROC_ROOT}/meminfo" 2>/dev/null)"; then
+    if ! available_kib="$(awk '/^MemAvailable:/ { print $2; exit }' /proc/meminfo 2>/dev/null)"; then
         fail 'Could not read MemAvailable from /proc/meminfo'
     fi
 
@@ -330,6 +348,7 @@ run_live_monitor() {
     collect_live_sample
     while true; do
         now="$(read_monotonic_seconds)" || fail 'Could not read /proc/uptime'
+        validate_monotonic_seconds 'live monotonic_seconds' "${now}" now
         elapsed_seconds="$(elapsed_from_start "${now}")"
         if awk -v elapsed="${elapsed_seconds}" -v duration="${duration_seconds}" 'BEGIN { exit !(elapsed >= duration) }'; then
             break
@@ -342,12 +361,10 @@ run_live_monitor() {
     done
 }
 
-if [[ "${MONITOR_ORIN_PHOTONVISION_SOURCE_ONLY:-0}" != '1' ]]; then
-    validate_source_output_paths
-    initialize_output
-    if [[ -n "${samples_file}" ]]; then
-        evaluate_samples_file
-    else
-        run_live_monitor
-    fi
+validate_source_output_paths
+initialize_output
+if [[ -n "${samples_file}" ]]; then
+    evaluate_samples_file
+else
+    run_live_monitor
 fi
