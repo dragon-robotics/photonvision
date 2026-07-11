@@ -1,4 +1,5 @@
 import { decode, encode } from "@msgpack/msgpack";
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
@@ -91,6 +92,9 @@ const main = () => {
   });
 };
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+) {
   main();
 }
