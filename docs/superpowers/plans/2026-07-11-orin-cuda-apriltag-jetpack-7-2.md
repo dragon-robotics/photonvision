@@ -27,6 +27,7 @@
 
 - `native/orin-apriltag/UPSTREAM.md`: pinned source revision and local modifications.
 - `native/orin-apriltag/LICENSE-4143.txt`: upstream Apache-2.0 license.
+- `native/orin-apriltag/VENDOR_MANIFEST.sha256`: SHA-256 manifest for every vendored upstream file.
 - `native/orin-apriltag/upstream/frc971/orin/`: pinned CUDA implementation.
 - `native/orin-apriltag/upstream/third_party/apriltag/`: pinned AprilTag C implementation and license.
 - `native/orin-apriltag/jni/DetectorRegistry.h`: handle registry and testable detector interface.
@@ -58,6 +59,7 @@
 - Create: `scripts/tests/verify-orin-cuda-vendor.ps1`
 - Create: `native/orin-apriltag/UPSTREAM.md`
 - Create: `native/orin-apriltag/LICENSE-4143.txt`
+- Create: `native/orin-apriltag/VENDOR_MANIFEST.sha256`
 - Create: `native/orin-apriltag/upstream/frc971/orin/**`
 - Create: `native/orin-apriltag/upstream/third_party/apriltag/**`
 
@@ -142,10 +144,10 @@ Run:
 
 ```powershell
 powershell -NoProfile -File scripts/tests/verify-orin-cuda-vendor.ps1
-git diff --check -- native/orin-apriltag scripts/tests/verify-orin-cuda-vendor.ps1
+git diff --check -- native/orin-apriltag/UPSTREAM.md native/orin-apriltag/LICENSE-4143.txt native/orin-apriltag/VENDOR_MANIFEST.sha256 scripts/tests/verify-orin-cuda-vendor.ps1
 ```
 
-Expected: both commands succeed.
+Expected: the verifier requires exact manifest path-set equality and SHA-256 matches, while the diff check succeeds for locally authored files. Vendored bytes are integrity-checked and intentionally excluded from whitespace normalization.
 
 - [ ] **Step 6: Commit the pinned source**
 
