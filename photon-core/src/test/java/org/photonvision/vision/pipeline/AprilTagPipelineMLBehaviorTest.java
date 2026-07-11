@@ -19,11 +19,14 @@ package org.photonvision.vision.pipeline;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.wpi.first.apriltag.AprilTagDetection;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Queue;
@@ -37,6 +40,7 @@ import org.photonvision.common.configuration.ConfigManager;
 import org.photonvision.common.configuration.NeuralNetworkModelManager.Family;
 import org.photonvision.common.configuration.NeuralNetworkModelManager.Version;
 import org.photonvision.common.configuration.NeuralNetworkModelsSettings.ModelProperties;
+import org.photonvision.vision.apriltag.AprilTagFamily;
 import org.photonvision.vision.camera.QuirkyCamera;
 import org.photonvision.vision.frame.Frame;
 import org.photonvision.vision.frame.FrameStaticProperties;
@@ -45,6 +49,9 @@ import org.photonvision.vision.objects.Model;
 import org.photonvision.vision.objects.NullModel;
 import org.photonvision.vision.opencv.CVMat;
 import org.photonvision.vision.pipe.CVPipe.CVPipeResult;
+import org.photonvision.vision.pipe.impl.AprilTagDetectionCudaPipe;
+import org.photonvision.vision.pipe.impl.AprilTagDetectionCudaPipe.AprilTagDetectionCudaPipeParams;
+import org.photonvision.vision.pipe.impl.AprilTagDetectionCudaPipe.Calibration;
 import org.photonvision.vision.pipe.impl.AprilTagDetectionPipe;
 import org.photonvision.vision.pipe.impl.AprilTagMLHybridPipe;
 import org.photonvision.vision.pipe.impl.AprilTagPoseEstimatorPipe;
@@ -208,6 +215,163 @@ public class AprilTagPipelineMLBehaviorTest {
         pipeline.release();
     }
 
+    @Test
+    public void cudaTagDetectionDefaultsFalseAndSerializesAsFalse() throws Exception {
+        var defaults = new AprilTagPipelineSettings();
+        var enabled = new AprilTagPipelineSettings();
+        enabled.useCudaTagDetection = true;
+
+        assertFalse(defaults.useCudaTagDetection);
+        assertNotEquals(defaults, enabled);
+        assertNotEquals(defaults.hashCode(), enabled.hashCode());
+        assertTrue(
+                new ObjectMapper().writeValueAsString(defaults).contains("\"useCudaTagDetection\":false"));
+    }
+
+    @Test
+    public void cudaIsEnabledOnlyForRequestedTag36h11() {
+        var cudaPipe = new FakeAprilTagDetectionCudaPipe();
+        var pipeline =
+                newCudaTestPipeline(
+                        cudaPipe, new FakeAprilTagDetectionPipe(List.of()), new FakeAprilTagMLHybridPipe());
+        pipeline.getSettings().useCudaTagDetection = true;
+        pipeline.getSettings().solvePNPEnabled = false;
+
+        var firstFrame = makeFrame();
+        var firstResult = pipeline.run(firstFrame, QuirkyCamera.DefaultCamera);
+        assertEquals(List.of(true), cudaPipe.enabledTransitions);
+        assertEquals(1, cudaPipe.lastParams.decimate());
+        firstResult.release();
+        firstFrame.release();
+
+        pipeline.getSettings().tagFamily = AprilTagFamily.kTag16h5;
+        var secondFrame = makeFrame();
+        var secondResult = pipeline.run(secondFrame, QuirkyCamera.DefaultCamera);
+        assertEquals(List.of(true, false), cudaPipe.enabledTransitions);
+        secondResult.release();
+        secondFrame.release();
+        pipeline.release();
+    }
+
+    @Test
+    public void disablingCudaOccursBeforeTheNextFrameUsesCpuDetection() {
+        var events = new ArrayList<String>();
+        var cudaPipe = new FakeAprilTagDetectionCudaPipe(events);
+        var cpuPipe = new FakeAprilTagDetectionPipe(List.of(), events);
+        var pipeline = newCudaTestPipeline(cudaPipe, cpuPipe, new FakeAprilTagMLHybridPipe());
+        pipeline.getSettings().useCudaTagDetection = true;
+        pipeline.getSettings().solvePNPEnabled = false;
+
+        var firstFrame = makeFrame();
+        var firstResult = pipeline.run(firstFrame, QuirkyCamera.DefaultCamera);
+        firstResult.release();
+        firstFrame.release();
+
+        pipeline.getSettings().useCudaTagDetection = false;
+        var secondFrame = makeFrame();
+        var secondResult = pipeline.run(secondFrame, QuirkyCamera.DefaultCamera);
+
+        assertTrue(events.indexOf("cuda-enabled-false") < events.lastIndexOf("cpu-run"));
+        secondResult.release();
+        secondFrame.release();
+        pipeline.release();
+    }
+
+    @Test
+    public void cudaFailureFallsBackToMlWhenMlIsEnabled() {
+        var cudaPipe = new FakeAprilTagDetectionCudaPipe();
+        cudaPipe.failDuringRun = true;
+        var cpuPipe = new FakeAprilTagDetectionPipe(List.of(makeDetection(6)));
+        var mlPipe = new FakeAprilTagMLHybridPipe();
+        mlPipe.nextResult = new MLDetectionResult(List.of(makeDetection(7)), List.of(), 1);
+        var pipeline = newCudaTestPipeline(cudaPipe, cpuPipe, mlPipe, Optional.of(new FakeModel()));
+        pipeline.getSettings().useCudaTagDetection = true;
+        pipeline.getSettings().useMLDetection = true;
+        pipeline.getSettings().solvePNPEnabled = false;
+
+        var frame = makeFrame();
+        var result = pipeline.run(frame, QuirkyCamera.DefaultCamera);
+
+        assertEquals(1, cudaPipe.runCount);
+        assertEquals(1, mlPipe.runCount);
+        assertEquals(0, cpuPipe.runCount);
+        assertEquals(7, result.targets.get(0).getFiducialId());
+        result.release();
+        frame.release();
+        pipeline.release();
+    }
+
+    @Test
+    public void cudaFailureFallsBackToCpuWhenMlIsDisabled() {
+        var cudaPipe = new FakeAprilTagDetectionCudaPipe();
+        cudaPipe.failDuringRun = true;
+        var cpuPipe = new FakeAprilTagDetectionPipe(List.of(makeDetection(8)));
+        var pipeline = newCudaTestPipeline(cudaPipe, cpuPipe, new FakeAprilTagMLHybridPipe());
+        pipeline.getSettings().useCudaTagDetection = true;
+        pipeline.getSettings().useMLDetection = false;
+        pipeline.getSettings().solvePNPEnabled = false;
+
+        var frame = makeFrame();
+        var result = pipeline.run(frame, QuirkyCamera.DefaultCamera);
+
+        assertEquals(1, cudaPipe.runCount);
+        assertEquals(1, cpuPipe.runCount);
+        assertEquals(8, result.targets.get(0).getFiducialId());
+        result.release();
+        frame.release();
+        pipeline.release();
+    }
+
+    @Test
+    public void validEmptyCudaResultDoesNotInvokeMlOrCpuFallback() {
+        var cudaPipe = new FakeAprilTagDetectionCudaPipe();
+        var cpuPipe = new FakeAprilTagDetectionPipe(List.of(makeDetection(9)));
+        var mlPipe = new FakeAprilTagMLHybridPipe();
+        mlPipe.nextResult = new MLDetectionResult(List.of(makeDetection(10)), List.of(), 1);
+        var pipeline = newCudaTestPipeline(cudaPipe, cpuPipe, mlPipe, Optional.of(new FakeModel()));
+        pipeline.getSettings().useCudaTagDetection = true;
+        pipeline.getSettings().useMLDetection = true;
+        pipeline.getSettings().solvePNPEnabled = false;
+
+        var frame = makeFrame();
+        var result = pipeline.run(frame, QuirkyCamera.DefaultCamera);
+
+        assertEquals(1, cudaPipe.runCount);
+        assertEquals(0, mlPipe.runCount);
+        assertEquals(0, cpuPipe.runCount);
+        assertTrue(result.targets.isEmpty());
+        result.release();
+        frame.release();
+        pipeline.release();
+    }
+
+    @Test
+    public void pipelineReleaseReachesCudaPipe() {
+        var cudaPipe = new FakeAprilTagDetectionCudaPipe();
+        var pipeline =
+                newCudaTestPipeline(
+                        cudaPipe, new FakeAprilTagDetectionPipe(List.of()), new FakeAprilTagMLHybridPipe());
+
+        pipeline.release();
+
+        assertEquals(1, cudaPipe.releaseCount);
+    }
+
+    private static TestAprilTagPipeline newCudaTestPipeline(
+            FakeAprilTagDetectionCudaPipe cudaPipe,
+            AprilTagDetectionPipe aprilTagDetectionPipe,
+            AprilTagMLHybridPipe mlHybridPipe,
+            Optional<Model>... mlModels) {
+        return new TestAprilTagPipeline(
+                cudaPipe,
+                aprilTagDetectionPipe,
+                mlHybridPipe,
+                new AprilTagPoseEstimatorPipe(),
+                new MultiTargetPNPPipe(),
+                new CalculateFPSPipe(),
+                mlModels);
+    }
+
     private static AprilTagDetection makeDetection(int id) {
         return new AprilTagDetection(
                 "tag36h11",
@@ -231,15 +395,24 @@ public class AprilTagPipelineMLBehaviorTest {
 
     private static final class FakeAprilTagDetectionPipe extends AprilTagDetectionPipe {
         private final List<AprilTagDetection> detections;
+        private final List<String> events;
         private int runCount;
 
         private FakeAprilTagDetectionPipe(List<AprilTagDetection> detections) {
+            this(detections, null);
+        }
+
+        private FakeAprilTagDetectionPipe(List<AprilTagDetection> detections, List<String> events) {
             this.detections = detections;
+            this.events = events;
         }
 
         @Override
         public CVPipeResult<List<AprilTagDetection>> run(CVMat in) {
             runCount++;
+            if (events != null) {
+                events.add("cpu-run");
+            }
             var result = new CVPipeResult<List<AprilTagDetection>>();
             result.output = detections;
             result.nanosElapsed = 5;
@@ -248,6 +421,124 @@ public class AprilTagPipelineMLBehaviorTest {
 
         @Override
         public void release() {}
+    }
+
+    private static final class FakeAprilTagDetectionCudaPipe extends AprilTagDetectionCudaPipe {
+        private final List<Boolean> enabledTransitions = new ArrayList<>();
+        private final List<String> events;
+        private boolean enabled;
+        private boolean available = true;
+        private boolean failDuringRun;
+        private int runCount;
+        private int releaseCount;
+        private AprilTagDetectionCudaPipeParams lastParams;
+        private Calibration lastCalibration;
+
+        private FakeAprilTagDetectionCudaPipe() {
+            this(new ArrayList<>());
+        }
+
+        private FakeAprilTagDetectionCudaPipe(List<String> events) {
+            super(new InertCudaBackend());
+            this.events = events;
+        }
+
+        @Override
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+            enabledTransitions.add(enabled);
+            events.add("cuda-enabled-" + enabled);
+        }
+
+        @Override
+        public boolean isAvailable() {
+            return enabled && available;
+        }
+
+        @Override
+        public void setParams(AprilTagDetectionCudaPipeParams newParams) {
+            lastParams = newParams;
+        }
+
+        @Override
+        public void setCalibration(Calibration calibration) {
+            lastCalibration = calibration;
+        }
+
+        @Override
+        public CVPipeResult<List<AprilTagDetection>> run(CVMat in) {
+            runCount++;
+            events.add("cuda-run");
+            if (failDuringRun) {
+                available = false;
+            }
+            var result = new CVPipeResult<List<AprilTagDetection>>();
+            result.output = List.of();
+            return result;
+        }
+
+        @Override
+        public void release() {
+            releaseCount++;
+        }
+    }
+
+    private static final class InertCudaBackend implements AprilTagDetectionCudaPipe.Backend {
+        @Override
+        public boolean isAvailable() {
+            return false;
+        }
+
+        @Override
+        public String getLoadError() {
+            return "not used by pipeline fake";
+        }
+
+        @Override
+        public long createGpuDetector(int width, int height, int decimate) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void setCalibration(
+                long handle,
+                double fx,
+                double fy,
+                double cx,
+                double cy,
+                double k1,
+                double k2,
+                double p1,
+                double p2,
+                double k3) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public AprilTagDetection[] processGray(
+                long handle, long dataAddress, int width, int height, long strideBytes) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void destroyGpuDetector(long handle) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public long getCudaFreeMemoryBytes() {
+            return 0;
+        }
+
+        @Override
+        public long getCudaTotalMemoryBytes() {
+            return 0;
+        }
+
+        @Override
+        public String getBuildInfo() {
+            return "inert";
+        }
     }
 
     private static final class FakeAprilTagMLHybridPipe extends AprilTagMLHybridPipe {
@@ -288,9 +579,28 @@ public class AprilTagPipelineMLBehaviorTest {
                 MultiTargetPNPPipe multiTagPNPPipe,
                 CalculateFPSPipe calculateFPSPipe,
                 Optional<Model>... mlModels) {
+            this(
+                    new FakeAprilTagDetectionCudaPipe(),
+                    aprilTagDetectionPipe,
+                    mlHybridPipe,
+                    singleTagPoseEstimatorPipe,
+                    multiTagPNPPipe,
+                    calculateFPSPipe,
+                    mlModels);
+        }
+
+        private TestAprilTagPipeline(
+                AprilTagDetectionCudaPipe cudaDetectionPipe,
+                AprilTagDetectionPipe aprilTagDetectionPipe,
+                AprilTagMLHybridPipe mlHybridPipe,
+                AprilTagPoseEstimatorPipe singleTagPoseEstimatorPipe,
+                MultiTargetPNPPipe multiTagPNPPipe,
+                CalculateFPSPipe calculateFPSPipe,
+                Optional<Model>... mlModels) {
             super(
                     new AprilTagPipelineSettings(),
                     aprilTagDetectionPipe,
+                    cudaDetectionPipe,
                     mlHybridPipe,
                     singleTagPoseEstimatorPipe,
                     multiTagPNPPipe,

@@ -30,8 +30,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.opencv.core.RotatedRect;
-import org.photonvision.common.configuration.NeuralNetworkModelManager;
 import org.photonvision.common.configuration.ConfigManager;
+import org.photonvision.common.configuration.NeuralNetworkModelManager;
 import org.photonvision.common.dataflow.structures.Packet;
 import org.photonvision.common.logging.LogGroup;
 import org.photonvision.common.logging.Logger;
@@ -42,7 +42,9 @@ import org.photonvision.vision.apriltag.AprilTagFamily;
 import org.photonvision.vision.frame.Frame;
 import org.photonvision.vision.frame.FrameThresholdType;
 import org.photonvision.vision.objects.Model;
-import org.photonvision.vision.pipe.CVPipe.CVPipeResult;
+import org.photonvision.vision.pipe.impl.AprilTagDetectionCudaPipe;
+import org.photonvision.vision.pipe.impl.AprilTagDetectionCudaPipe.AprilTagDetectionCudaPipeParams;
+import org.photonvision.vision.pipe.impl.AprilTagDetectionCudaPipe.Calibration;
 import org.photonvision.vision.pipe.impl.AprilTagDetectionPipe;
 import org.photonvision.vision.pipe.impl.AprilTagDetectionPipe.AprilTagDetectionPipeParams;
 import org.photonvision.vision.pipe.impl.AprilTagMLHybridPipe;
@@ -61,6 +63,7 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
     private static final Logger logger = new Logger(AprilTagPipeline.class, LogGroup.VisionModule);
 
     private final AprilTagDetectionPipe aprilTagDetectionPipe;
+    private final AprilTagDetectionCudaPipe cudaDetectionPipe;
     private final AprilTagPoseEstimatorPipe singleTagPoseEstimatorPipe;
     private final MultiTargetPNPPipe multiTagPNPPipe;
     private final CalculateFPSPipe calculateFPSPipe;
@@ -76,6 +79,7 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
         this(
                 settings,
                 new AprilTagDetectionPipe(),
+                new AprilTagDetectionCudaPipe(),
                 new AprilTagMLHybridPipe(),
                 new AprilTagPoseEstimatorPipe(),
                 new MultiTargetPNPPipe(),
@@ -85,6 +89,7 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
     AprilTagPipeline(
             AprilTagPipelineSettings settings,
             AprilTagDetectionPipe aprilTagDetectionPipe,
+            AprilTagDetectionCudaPipe cudaDetectionPipe,
             AprilTagMLHybridPipe mlHybridPipe,
             AprilTagPoseEstimatorPipe singleTagPoseEstimatorPipe,
             MultiTargetPNPPipe multiTagPNPPipe,
@@ -92,6 +97,7 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
         super(PROCESSING_TYPE);
         this.settings = settings;
         this.aprilTagDetectionPipe = aprilTagDetectionPipe;
+        this.cudaDetectionPipe = cudaDetectionPipe;
         this.mlHybridPipe = mlHybridPipe;
         this.singleTagPoseEstimatorPipe = singleTagPoseEstimatorPipe;
         this.multiTagPNPPipe = multiTagPNPPipe;
@@ -118,6 +124,13 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
 
     @Override
     protected void setPipeParamsImpl() {
+        boolean cudaEnabled =
+                settings.useCudaTagDetection && settings.tagFamily == AprilTagFamily.kTag36h11;
+        cudaDetectionPipe.setEnabled(cudaEnabled);
+        if (cudaEnabled) {
+            cudaDetectionPipe.setParams(new AprilTagDetectionCudaPipeParams(settings.decimate));
+        }
+
         // Sanitize thread count - not supported to have fewer than 1 threads
         settings.threads = Math.max(1, settings.threads);
 
@@ -179,6 +192,21 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
                 var fx = cameraMatrix.get(0, 0)[0];
                 var fy = cameraMatrix.get(1, 1)[0];
 
+                if (cudaEnabled) {
+                    var distortion = frameStaticProperties.cameraCalibration.getDistCoeffsMat();
+                    cudaDetectionPipe.setCalibration(
+                            new Calibration(
+                                    fx,
+                                    fy,
+                                    cx,
+                                    cy,
+                                    distortionCoefficient(distortion, 0),
+                                    distortionCoefficient(distortion, 1),
+                                    distortionCoefficient(distortion, 2),
+                                    distortionCoefficient(distortion, 3),
+                                    distortionCoefficient(distortion, 4)));
+                }
+
                 singleTagPoseEstimatorPipe.setParams(
                         new AprilTagPoseEstimatorPipeParams(
                                 new Config(tagWidth, fx, fy, cx, cy),
@@ -193,6 +221,13 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
         }
     }
 
+    private static double distortionCoefficient(org.opencv.core.Mat distortion, int index) {
+        if (distortion == null || distortion.total() <= index) {
+            return 0;
+        }
+        return distortion.get(0, index)[0];
+    }
+
     @Override
     protected CVPipelineResult process(Frame frame, AprilTagPipelineSettings settings) {
         long sumPipeNanosElapsed = 0L;
@@ -202,9 +237,19 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
             return new CVPipelineResult(frame.sequenceID, 0, 0, List.of(), frame);
         }
 
-        List<AprilTagDetection> detections;
+        List<AprilTagDetection> detections = List.of();
         List<RotatedRect> mlDetectionRois = List.of();
-        if (settings.useMLDetection && mlHybridPipe.isAvailable()) {
+        boolean cudaResultWasValid = false;
+        if (cudaDetectionPipe.isAvailable()) {
+            var cudaResult = cudaDetectionPipe.run(frame.processedImage);
+            sumPipeNanosElapsed += cudaResult.nanosElapsed;
+            if (cudaDetectionPipe.isAvailable()) {
+                detections = cudaResult.output;
+                cudaResultWasValid = true;
+            }
+        }
+
+        if (!cudaResultWasValid && settings.useMLDetection && mlHybridPipe.isAvailable()) {
             var mlResult = mlHybridPipe.run(frame);
             detections = mlResult.output.detections();
             mlDetectionRois = mlResult.output.rois();
@@ -214,7 +259,7 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
                 sumPipeNanosElapsed += fallbackResult.nanosElapsed;
                 detections = fallbackResult.output;
             }
-        } else {
+        } else if (!cudaResultWasValid) {
             var tagDetectionPipeResult = aprilTagDetectionPipe.run(frame.processedImage);
             sumPipeNanosElapsed += tagDetectionPipeResult.nanosElapsed;
             detections = tagDetectionPipeResult.output;
@@ -335,6 +380,7 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
     @Override
     public void release() {
         aprilTagDetectionPipe.release();
+        cudaDetectionPipe.release();
         mlHybridPipe.release();
         singleTagPoseEstimatorPipe.release();
         super.release();

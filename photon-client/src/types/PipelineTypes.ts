@@ -228,6 +228,7 @@ export interface AprilTagPipelineSettings extends PipelineSettings {
   tagFamily: AprilTagFamily;
   doMultiTarget: boolean;
   doSingleTargetAlways: boolean;
+  useCudaTagDetection: boolean;
   useMLDetection: boolean;
   mlConfidenceThreshold: number;
   mlNmsThreshold: number;
@@ -259,6 +260,7 @@ export const DefaultAprilTagPipelineSettings: AprilTagPipelineSettings = {
   tagFamily: AprilTagFamily.Family36h11,
   doMultiTarget: false,
   doSingleTargetAlways: false,
+  useCudaTagDetection: false,
   useMLDetection: false,
   mlConfidenceThreshold: 0.5,
   mlNmsThreshold: 0.45,

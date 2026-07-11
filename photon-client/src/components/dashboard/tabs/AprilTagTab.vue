@@ -119,14 +119,25 @@ const selectedAprilTagModel = computed({
         (value) => useCameraSettingsStore().changeCurrentPipelineSetting({ refineEdges: value }, false)
       "
     />
+    <v-divider class="mt-3 mb-2" />
+    <p class="text-subtitle-2 mb-2">GPU Detection</p>
+    <pv-switch
+      v-model="currentPipelineSettings.useCudaTagDetection"
+      :switch-cols="interactiveCols"
+      label="CUDA AprilTag Detector"
+      tooltip="Runs full-frame AprilTag 36h11 detection on the Jetson GPU. Falls back automatically when unavailable."
+      @update:modelValue="
+        (value) => useCameraSettingsStore().changeCurrentPipelineSetting({ useCudaTagDetection: value }, false)
+      "
+    />
     <v-divider v-if="mlDetectionAvailable" class="mt-3 mb-2" />
     <div v-if="mlDetectionAvailable">
-      <p class="text-subtitle-2 mb-2">ML-Tag</p>
+      <p class="text-subtitle-2 mb-2">ML ROI Detection</p>
       <pv-switch
         v-model="currentPipelineSettings.useMLDetection"
         :switch-cols="interactiveCols"
-        label="AI-Assisted Detection (CUDA)"
-        tooltip="Uses Orin GPU CUDA acceleration to find AprilTag regions before decoding tags."
+        label="AI-Assisted ROI Detection (TensorRT)"
+        tooltip="Uses TensorRT to find AprilTag regions before CPU decoding."
         @update:modelValue="
           (value) => useCameraSettingsStore().changeCurrentPipelineSetting({ useMLDetection: value }, false)
         "
