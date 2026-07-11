@@ -441,7 +441,7 @@ git commit -m "feat: add safe CUDA detector handle registry"
 
 - [ ] **Step 1: Write a failing CUDA smoke test**
 
-Create a test that records `cudaMemGetInfo`, constructs one 1280x800 decimate-2 detector, processes 120 black grayscale frames, destroys it, synchronizes the device, and requires post-destroy free CUDA memory to be within 32 MiB of the baseline. Repeat with two simultaneous detector handles and require both calls to complete without serializing through the registry mutex.
+Create a test that warms the CUDA context, records `cudaMemGetInfo`, constructs one 1280x800 decimate-2 detector, processes 120 black grayscale frames, destroys it, synchronizes the device, and requires post-destroy free CUDA memory to be within 32 MiB of the baseline. Keep this smoke test single-detector: dual-camera CUDA allocation is deferred to Task 10, after `MemoryMax=6G` and the live memory monitor are active.
 
 Run:
 
@@ -586,9 +586,9 @@ git commit -m "feat: build CUDA AprilTag JNI for JetPack 7.2"
 ### Task 5: Make the Java CUDA Pipe Own Native Lifetime
 
 **Files:**
-- Modify: `photon-core/src/main/java/org/photonvision/jni/GpuDetectorJNI.java`
-- Modify: `photon-core/src/main/java/org/photonvision/vision/pipe/impl/AprilTagDetectionCudaPipe.java`
-- Modify: `photon-core/src/test/java/org/photonvision/vision/pipe/impl/AprilTagDetectionCudaPipeTest.java`
+- Create: `photon-core/src/main/java/org/photonvision/jni/GpuDetectorJNI.java`
+- Create: `photon-core/src/main/java/org/photonvision/vision/pipe/impl/AprilTagDetectionCudaPipe.java`
+- Create: `photon-core/src/test/java/org/photonvision/vision/pipe/impl/AprilTagDetectionCudaPipeTest.java`
 
 **Interfaces:**
 - Consumes: Task 4 JNI signatures.
