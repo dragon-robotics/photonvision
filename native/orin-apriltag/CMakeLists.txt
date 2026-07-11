@@ -65,3 +65,11 @@ add_library(apriltag_vendor STATIC ${APRILTAG_VENDOR_SOURCES})
 set_target_properties(apriltag_vendor PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(apriltag_vendor PUBLIC "${APRILTAG_VENDOR_DIR}")
 target_link_libraries(apriltag_vendor PUBLIC Threads::Threads m)
+
+add_executable(detector_registry_test
+    jni/DetectorRegistry.cpp
+    tests/DetectorRegistryTest.cpp)
+target_include_directories(detector_registry_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/jni")
+target_link_libraries(detector_registry_test PRIVATE Threads::Threads)
+add_test(NAME detector_registry_test COMMAND detector_registry_test)
