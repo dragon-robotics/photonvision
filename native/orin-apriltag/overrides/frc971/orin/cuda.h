@@ -70,9 +70,9 @@ std::size_t CheckedAllocationBytes(std::size_t size) {
   do {                                                                      \
     if (!(condition)) throw std::runtime_error("Check failed: " #condition); \
   } while (false)
-#define CHECK_EQ(left, right) CHECK((left) == (right));
-#define CHECK_LE(left, right) CHECK((left) <= (right));
-#define CHECK_LT(left, right) CHECK((left) < (right));
+#define CHECK_EQ(left, right) CHECK((left) == (right))
+#define CHECK_LE(left, right) CHECK((left) <= (right))
+#define CHECK_LT(left, right) CHECK((left) < (right))
 
 template <typename InputType, typename OutputType, typename ConversionOp,
           typename OffsetT>

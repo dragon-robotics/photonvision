@@ -47,6 +47,9 @@ int main() {
     std::vector<std::uint8_t> pixels(
         static_cast<std::size_t>(kWidth) * static_cast<std::size_t>(kHeight),
         0);
+    constexpr std::size_t kPaddedStride = kWidth + 32;
+    std::vector<std::uint8_t> padded_pixels(
+        kPaddedStride * static_cast<std::size_t>(kHeight), 0);
     {
       photon::cuda_apriltag::CudaAprilTagDetector detector(kWidth, kHeight,
                                                             kDecimate);
@@ -74,12 +77,22 @@ int main() {
           throw std::runtime_error("Black frame unexpectedly produced a detection");
         }
       }
+      const photon::cuda_apriltag::GrayFrame padded_frame{
+          .data = padded_pixels.data(),
+          .width = kWidth,
+          .height = kHeight,
+          .stride_bytes = kPaddedStride,
+      };
+      if (!detector.Process(padded_frame).empty()) {
+        throw std::runtime_error(
+            "Padded-stride black frame unexpectedly produced a detection");
+      }
       const auto process_end = std::chrono::steady_clock::now();
       const auto runtime_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   process_end - process_start)
                                   .count();
       std::cout << "Processed " << kFrameCount << " frames in " << runtime_ms
-                << " ms\n";
+                << " ms plus one padded-stride frame\n";
     }
 
     TEST_CHECK_CUDA(cudaDeviceSynchronize());
@@ -96,8 +109,9 @@ int main() {
     if (baseline_total != after_total) {
       throw std::runtime_error("CUDA total memory changed during smoke test");
     }
-    if (delta > kAllowedDelta) {
-      throw std::runtime_error("CUDA free-memory delta exceeded 32 MiB");
+    if (delta >= kAllowedDelta) {
+      throw std::runtime_error(
+          "CUDA free-memory delta must be less than 32 MiB");
     }
     return 0;
   } catch (const std::exception& error) {

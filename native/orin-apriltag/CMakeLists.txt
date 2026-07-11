@@ -15,6 +15,20 @@ find_package(JNI REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
 
+string(REGEX MATCH "^([0-9]+\\.[0-9]+)(\\.|$)"
+    ORIN_CUDA_COMPILER_VERSION_MATCH "${CMAKE_CUDA_COMPILER_VERSION}")
+set(ORIN_CUDA_COMPILER_MAJOR_MINOR "${CMAKE_MATCH_1}")
+string(REGEX MATCH "^([0-9]+\\.[0-9]+)(\\.|$)"
+    ORIN_CUDATOOLKIT_VERSION_MATCH "${CUDAToolkit_VERSION}")
+set(ORIN_CUDATOOLKIT_MAJOR_MINOR "${CMAKE_MATCH_1}")
+if(NOT ORIN_CUDA_COMPILER_MAJOR_MINOR STREQUAL "13.2" OR
+   NOT ORIN_CUDATOOLKIT_MAJOR_MINOR STREQUAL "13.2")
+    message(FATAL_ERROR
+        "CUDA 13.2 is required for the Orin compatibility shims; observed "
+        "CMAKE_CUDA_COMPILER_VERSION='${CMAKE_CUDA_COMPILER_VERSION}' and "
+        "CUDAToolkit_VERSION='${CUDAToolkit_VERSION}'.")
+endif()
+
 find_path(CUDA_CCCL_INCLUDE_DIR
     cub/device/device_copy.cuh
     HINTS ${CUDAToolkit_INCLUDE_DIRS}
@@ -85,21 +99,102 @@ configure_file(
 
 set(ORIN_LINE_FIT_SOURCE "${ORIN_CUDA_SOURCE_DIR}/line_fit_filter.cu")
 file(READ "${ORIN_LINE_FIT_SOURCE}" ORIN_LINE_FIT_CONTENT)
-set(ORIN_FIT_LINES_ANCHOR "  constexpr size_t kThreads = 128;")
-set(ORIN_FIT_QUADS_ANCHOR "  constexpr size_t kThreads = MaxRankedIndex();")
-string(FIND "${ORIN_LINE_FIT_CONTENT}" "${ORIN_FIT_LINES_ANCHOR}"
-    ORIN_FIT_LINES_OFFSET)
-string(FIND "${ORIN_LINE_FIT_CONTENT}" "${ORIN_FIT_QUADS_ANCHOR}"
-    ORIN_FIT_QUADS_OFFSET)
-if(ORIN_FIT_LINES_OFFSET EQUAL -1 OR ORIN_FIT_QUADS_OFFSET EQUAL -1)
-    message(FATAL_ERROR "Pinned line-fit source no longer matches zero-work override")
-endif()
-string(REPLACE "${ORIN_FIT_LINES_ANCHOR}"
-    "  if (points == 0) return;\n${ORIN_FIT_LINES_ANCHOR}"
-    ORIN_LINE_FIT_CONTENT "${ORIN_LINE_FIT_CONTENT}")
-string(REPLACE "${ORIN_FIT_QUADS_ANCHOR}"
-    "  if (num_extents == 0) return;\n${ORIN_FIT_QUADS_ANCHOR}"
-    ORIN_LINE_FIT_CONTENT "${ORIN_LINE_FIT_CONTENT}")
+string(REPLACE "\r\n" "\n" ORIN_LINE_FIT_CONTENT "${ORIN_LINE_FIT_CONTENT}")
+
+function(replace_staged_function_once content_variable anchor replacement name)
+    string(LENGTH "${anchor}" anchor_length)
+    string(LENGTH "${${content_variable}}" content_length)
+    string(REPLACE "${anchor}" "" content_without_anchor
+        "${${content_variable}}")
+    string(LENGTH "${content_without_anchor}" content_without_anchor_length)
+    math(EXPR match_count
+        "(${content_length} - ${content_without_anchor_length}) / ${anchor_length}")
+    if(NOT match_count EQUAL 1)
+        message(FATAL_ERROR
+            "Expected exactly one full-function ${name} anchor in staged "
+            "line_fit_filter.cu; found ${match_count}.")
+    endif()
+    string(REPLACE "${anchor}" "${replacement}" replaced_content
+        "${${content_variable}}")
+    set(${content_variable} "${replaced_content}" PARENT_SCOPE)
+endfunction()
+
+set(ORIN_FIT_LINES_ANCHOR [=[void FitLines(
+    const LineFitPoint *line_fit_points_device, size_t points,
+    const cub::KeyValuePair<long, MinMaxExtents> *selected_extents_device,
+    size_t num_extents, double *errs_device, double *filtered_errs_device,
+    Peak *peaks_device, CudaStream *stream) {
+  constexpr size_t kThreads = 128;
+  const size_t kBlocks = (points + kPointsPerBlock - 2 * kErrorsBuffer - 1) /
+                         (kPointsPerBlock - 2 * kErrorsBuffer);
+
+  /*VLOG(1) << "Spawning with " << kThreads << " threads, and " << kBlocks
+          << " blocks for " << num_extents << " blob_ids and " << points
+          << " points";*/
+  DoFitLines<kThreads><<<kBlocks, kThreads, 0, stream->get()>>>(
+      line_fit_points_device, points, selected_extents_device, errs_device,
+      filtered_errs_device, peaks_device);
+}]=])
+set(ORIN_FIT_LINES_REPLACEMENT [=[void FitLines(
+    const LineFitPoint *line_fit_points_device, size_t points,
+    const cub::KeyValuePair<long, MinMaxExtents> *selected_extents_device,
+    size_t num_extents, double *errs_device, double *filtered_errs_device,
+    Peak *peaks_device, CudaStream *stream) {
+  if (points == 0) return;
+  constexpr size_t kThreads = 128;
+  const size_t kBlocks = (points + kPointsPerBlock - 2 * kErrorsBuffer - 1) /
+                         (kPointsPerBlock - 2 * kErrorsBuffer);
+
+  /*VLOG(1) << "Spawning with " << kThreads << " threads, and " << kBlocks
+          << " blocks for " << num_extents << " blob_ids and " << points
+          << " points";*/
+  DoFitLines<kThreads><<<kBlocks, kThreads, 0, stream->get()>>>(
+      line_fit_points_device, points, selected_extents_device, errs_device,
+      filtered_errs_device, peaks_device);
+}]=])
+
+set(ORIN_FIT_QUADS_ANCHOR [=[void FitQuads(
+    const Peak *peaks_device, size_t /*peaks*/, const PeakExtents *peak_extents,
+    size_t num_extents, const LineFitPoint *line_fit_points_device, int nmaxima,
+    const cub::KeyValuePair<long, MinMaxExtents> *selected_extents_device,
+    float max_line_fit_mse, double cos_critical_rad, FitQuad *fit_quads_device,
+    CudaStream *stream) {
+  constexpr size_t kThreads = MaxRankedIndex();
+  const size_t kBlocks = num_extents;
+  /*VLOG(1) << "Spawning with " << kThreads << " threads, and " << kBlocks
+          << " blocks for " << num_extents << " blob_ids";*/
+  CHECK_EQ(nmaxima, kNMaxima)
+      //<< ": Kernel is compiled and optimized for a fixed nmaxima, please "
+      //   "recompile if you want to change it.";
+  DoFitQuads<<<kBlocks, kThreads, 0, stream->get()>>>(
+      peaks_device, peak_extents, line_fit_points_device,
+      selected_extents_device, max_line_fit_mse, cos_critical_rad,
+      fit_quads_device);
+}]=])
+set(ORIN_FIT_QUADS_REPLACEMENT [=[void FitQuads(
+    const Peak *peaks_device, size_t /*peaks*/, const PeakExtents *peak_extents,
+    size_t num_extents, const LineFitPoint *line_fit_points_device, int nmaxima,
+    const cub::KeyValuePair<long, MinMaxExtents> *selected_extents_device,
+    float max_line_fit_mse, double cos_critical_rad, FitQuad *fit_quads_device,
+    CudaStream *stream) {
+  if (num_extents == 0) return;
+  constexpr size_t kThreads = MaxRankedIndex();
+  const size_t kBlocks = num_extents;
+  /*VLOG(1) << "Spawning with " << kThreads << " threads, and " << kBlocks
+          << " blocks for " << num_extents << " blob_ids";*/
+  CHECK_EQ(nmaxima, kNMaxima);
+      //<< ": Kernel is compiled and optimized for a fixed nmaxima, please "
+      //   "recompile if you want to change it.";
+  DoFitQuads<<<kBlocks, kThreads, 0, stream->get()>>>(
+      peaks_device, peak_extents, line_fit_points_device,
+      selected_extents_device, max_line_fit_mse, cos_critical_rad,
+      fit_quads_device);
+}]=])
+
+replace_staged_function_once(ORIN_LINE_FIT_CONTENT
+    "${ORIN_FIT_LINES_ANCHOR}" "${ORIN_FIT_LINES_REPLACEMENT}" "FitLines")
+replace_staged_function_once(ORIN_LINE_FIT_CONTENT
+    "${ORIN_FIT_QUADS_ANCHOR}" "${ORIN_FIT_QUADS_REPLACEMENT}" "FitQuads")
 file(WRITE "${ORIN_LINE_FIT_SOURCE}" "${ORIN_LINE_FIT_CONTENT}")
 
 set(ORIN_CUDA_COMPAT_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/compat")
