@@ -29,6 +29,7 @@ import edu.wpi.first.math.util.Units;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import org.opencv.core.Mat;
 import org.opencv.core.RotatedRect;
 import org.photonvision.common.configuration.ConfigManager;
 import org.photonvision.common.configuration.NeuralNetworkModelManager;
@@ -39,6 +40,8 @@ import org.photonvision.common.util.math.MathUtils;
 import org.photonvision.estimation.TargetModel;
 import org.photonvision.targeting.MultiTargetPNPResult;
 import org.photonvision.vision.apriltag.AprilTagFamily;
+import org.photonvision.vision.calibration.CameraCalibrationCoefficients;
+import org.photonvision.vision.calibration.JsonMatOfDouble;
 import org.photonvision.vision.frame.Frame;
 import org.photonvision.vision.frame.FrameThresholdType;
 import org.photonvision.vision.objects.Model;
@@ -61,6 +64,8 @@ import org.photonvision.vision.target.TrackedTarget.TargetCalculationParameters;
 
 public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipelineSettings> {
     private static final Logger logger = new Logger(AprilTagPipeline.class, LogGroup.VisionModule);
+    private static final Calibration DEFAULT_CUDA_CALIBRATION =
+            new Calibration(1, 1, 0, 0, 0, 0, 0, 0, 0);
 
     private final AprilTagDetectionPipe aprilTagDetectionPipe;
     private final AprilTagDetectionCudaPipe cudaDetectionPipe;
@@ -184,48 +189,97 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
                             detectionParams, decodeParams, settings.mlRoiPaddingPixels));
         }
 
-        if (frameStaticProperties.cameraCalibration != null) {
-            var cameraMatrix = frameStaticProperties.cameraCalibration.getCameraIntrinsicsMat();
-            if (cameraMatrix != null && cameraMatrix.rows() > 0) {
-                var cx = cameraMatrix.get(0, 2)[0];
-                var cy = cameraMatrix.get(1, 2)[0];
-                var fx = cameraMatrix.get(0, 0)[0];
-                var fy = cameraMatrix.get(1, 1)[0];
+        var validatedCalibration = getValidatedCalibration(frameStaticProperties.cameraCalibration);
+        if (validatedCalibration.isEmpty() && frameStaticProperties.cameraCalibration != null) {
+            frameStaticProperties.cameraCalibration = null;
+        }
+        if (cudaEnabled) {
+            cudaDetectionPipe.setCalibration(validatedCalibration.orElse(DEFAULT_CUDA_CALIBRATION));
+        }
 
-                if (cudaEnabled) {
-                    var distortion = frameStaticProperties.cameraCalibration.getDistCoeffsMat();
-                    cudaDetectionPipe.setCalibration(
-                            new Calibration(
-                                    fx,
-                                    fy,
-                                    cx,
-                                    cy,
-                                    distortionCoefficient(distortion, 0),
-                                    distortionCoefficient(distortion, 1),
-                                    distortionCoefficient(distortion, 2),
-                                    distortionCoefficient(distortion, 3),
-                                    distortionCoefficient(distortion, 4)));
-                }
+        if (validatedCalibration.isPresent()) {
+            var calibration = validatedCalibration.get();
+            singleTagPoseEstimatorPipe.setParams(
+                    new AprilTagPoseEstimatorPipeParams(
+                            new Config(
+                                    tagWidth, calibration.fx(), calibration.fy(), calibration.cx(), calibration.cy()),
+                            frameStaticProperties.cameraCalibration,
+                            settings.numIterations));
 
-                singleTagPoseEstimatorPipe.setParams(
-                        new AprilTagPoseEstimatorPipeParams(
-                                new Config(tagWidth, fx, fy, cx, cy),
-                                frameStaticProperties.cameraCalibration,
-                                settings.numIterations));
-
-                // TODO global state ew
-                var atfl = ConfigManager.getInstance().getConfig().getApriltagFieldLayout();
-                multiTagPNPPipe.setParams(
-                        new MultiTargetPNPPipeParams(frameStaticProperties.cameraCalibration, atfl, tagModel));
-            }
+            // TODO global state ew
+            var atfl = ConfigManager.getInstance().getConfig().getApriltagFieldLayout();
+            multiTagPNPPipe.setParams(
+                    new MultiTargetPNPPipeParams(frameStaticProperties.cameraCalibration, atfl, tagModel));
         }
     }
 
-    private static double distortionCoefficient(org.opencv.core.Mat distortion, int index) {
-        if (distortion == null || distortion.total() <= index) {
-            return 0;
+    private static Optional<Calibration> getValidatedCalibration(
+            CameraCalibrationCoefficients calibration) {
+        if (calibration == null
+                || !hasExpectedData(calibration.cameraIntrinsics)
+                || !hasExpectedData(calibration.distCoeffs)) {
+            return Optional.empty();
         }
-        return distortion.get(0, index)[0];
+
+        try {
+            Mat intrinsics = calibration.getCameraIntrinsicsMat();
+            Mat distortion = calibration.getDistCoeffsMat();
+            int distortionCount = (int) distortion.total();
+            if (intrinsics.rows() != 3
+                    || intrinsics.cols() != 3
+                    || intrinsics.channels() != 1
+                    || (distortion.rows() != 1 && distortion.cols() != 1)
+                    || distortion.channels() != 1
+                    || !isSupportedDistortionCount(distortionCount)) {
+                return Optional.empty();
+            }
+
+            double[] intrinsicData = new double[9];
+            double[] distortionData = new double[distortionCount];
+            if (intrinsics.get(0, 0, intrinsicData) != intrinsicData.length * Double.BYTES
+                    || distortion.get(0, 0, distortionData) != distortionData.length * Double.BYTES
+                    || !allFinite(intrinsicData)
+                    || !allFinite(distortionData)
+                    || intrinsicData[0] <= 0
+                    || intrinsicData[4] <= 0) {
+                return Optional.empty();
+            }
+
+            return Optional.of(
+                    new Calibration(
+                            intrinsicData[0],
+                            intrinsicData[4],
+                            intrinsicData[2],
+                            intrinsicData[5],
+                            distortionData[0],
+                            distortionData[1],
+                            distortionData[2],
+                            distortionData[3],
+                            distortionCount > 4 ? distortionData[4] : 0));
+        } catch (RuntimeException error) {
+            return Optional.empty();
+        }
+    }
+
+    private static boolean hasExpectedData(JsonMatOfDouble matrix) {
+        return matrix != null
+                && matrix.rows > 0
+                && matrix.cols > 0
+                && matrix.data != null
+                && (long) matrix.rows * matrix.cols == matrix.data.length;
+    }
+
+    private static boolean isSupportedDistortionCount(int count) {
+        return count == 4 || count == 5 || count == 8 || count == 12 || count == 14;
+    }
+
+    private static boolean allFinite(double[] values) {
+        for (double value : values) {
+            if (!Double.isFinite(value)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
