@@ -165,6 +165,65 @@ class AprilTagDetectionCudaPipeTest {
     }
 
     @Test
+    void createFailureCanRecoverAfterDisableAndRetry() {
+        var backend = new FakeBackend();
+        backend.failCreate = true;
+        var pipe = new AprilTagDetectionCudaPipe(backend);
+        var image = grayImage(640, 480);
+        try {
+            pipe.setEnabled(true);
+
+            assertTrue(pipe.run(image).output.isEmpty());
+            assertEquals(1, backend.createCount);
+            assertEquals(0, backend.destroyCount);
+            assertFalse(pipe.isAvailable());
+
+            pipe.setEnabled(false);
+            backend.failCreate = false;
+            pipe.setEnabled(true);
+            pipe.run(image);
+
+            assertEquals(2, backend.createCount);
+            assertEquals(1, backend.processCount);
+            assertTrue(pipe.isAvailable());
+        } finally {
+            image.release();
+            pipe.release();
+        }
+    }
+
+    @Test
+    void calibrationFailureDestroysNewHandleAndCanRecoverAfterDisable() {
+        var backend = new FakeBackend();
+        backend.failCalibration = true;
+        var pipe = new AprilTagDetectionCudaPipe(backend);
+        var image = grayImage(640, 480);
+        try {
+            pipe.setEnabled(true);
+
+            assertTrue(pipe.run(image).output.isEmpty());
+            assertEquals(1, backend.createCount);
+            assertEquals(1, backend.calibrationCount);
+            assertEquals(1, backend.destroyCount);
+            assertEquals(0, backend.processCount);
+            assertFalse(pipe.isAvailable());
+
+            pipe.setEnabled(false);
+            backend.failCalibration = false;
+            pipe.setEnabled(true);
+            pipe.run(image);
+
+            assertEquals(2, backend.createCount);
+            assertEquals(2, backend.calibrationCount);
+            assertEquals(1, backend.processCount);
+            assertTrue(pipe.isAvailable());
+        } finally {
+            image.release();
+            pipe.release();
+        }
+    }
+
+    @Test
     void runtimeFailureDestroysHandleBeforeFallbackState() {
         var backend = new FakeBackend();
         backend.failDetection = true;
@@ -220,6 +279,37 @@ class AprilTagDetectionCudaPipeTest {
             pipe.run(image);
 
             assertEquals(1, backend.createCount);
+            assertEquals(1, backend.destroyCount);
+            assertFalse(pipe.isAvailable());
+        } finally {
+            image.release();
+            pipe.release();
+        }
+    }
+
+    @Test
+    void releaseAfterUncertainCleanupIsTerminalAndIdempotent() {
+        var backend = new FakeBackend();
+        backend.failDestroy = true;
+        var pipe = new AprilTagDetectionCudaPipe(backend);
+        var image = grayImage(640, 480);
+        try {
+            pipe.setEnabled(true);
+            pipe.run(image);
+            var originalParams = pipe.getParams();
+            pipe.setEnabled(false);
+
+            pipe.release();
+            pipe.release();
+            pipe.setEnabled(true);
+            pipe.setParams(new AprilTagDetectionCudaPipe.AprilTagDetectionCudaPipeParams(2));
+            pipe.setCalibration(new AprilTagDetectionCudaPipe.Calibration(2, 2, 1, 1, 0, 0, 0, 0, 0));
+            pipe.run(image);
+
+            assertEquals(originalParams, pipe.getParams());
+            assertEquals(1, backend.createCount);
+            assertEquals(1, backend.calibrationCount);
+            assertEquals(1, backend.processCount);
             assertEquals(1, backend.destroyCount);
             assertFalse(pipe.isAvailable());
         } finally {
@@ -402,6 +492,28 @@ class AprilTagDetectionCudaPipeTest {
         assertEquals(originalMatCount, CVMat.getMatCount());
     }
 
+    @Test
+    void resizeFailureReleasesTemporaryCvMat() {
+        int originalMatCount = CVMat.getMatCount();
+        var backend = new FakeBackend();
+        var pipe = new AprilTagDetectionCudaPipe(backend);
+        var image = new CVMat(new ResizeFailingMat());
+        try {
+            int matCountWithInput = CVMat.getMatCount();
+            pipe.setEnabled(true);
+            pipe.setParams(new AprilTagDetectionCudaPipe.AprilTagDetectionCudaPipeParams(3));
+
+            assertTrue(pipe.run(image).output.isEmpty());
+            assertEquals(matCountWithInput, CVMat.getMatCount());
+            assertEquals(0, backend.createCount);
+            assertFalse(pipe.isAvailable());
+        } finally {
+            image.release();
+            pipe.release();
+        }
+        assertEquals(originalMatCount, CVMat.getMatCount());
+    }
+
     private static CVMat grayImage(int width, int height) {
         return new CVMat(Mat.zeros(height, width, CvType.CV_8UC1));
     }
@@ -418,8 +530,32 @@ class AprilTagDetectionCudaPipeTest {
                 new double[] {8, 9, 10, 11, 12, 13, 14, 25});
     }
 
+    private static final class ResizeFailingMat extends Mat {
+        @Override
+        public boolean empty() {
+            return false;
+        }
+
+        @Override
+        public int type() {
+            return CvType.CV_8UC1;
+        }
+
+        @Override
+        public int cols() {
+            return 640;
+        }
+
+        @Override
+        public int rows() {
+            return 480;
+        }
+    }
+
     private static final class FakeBackend implements AprilTagDetectionCudaPipe.Backend {
         boolean available = true;
+        boolean failCreate;
+        boolean failCalibration;
         boolean failDetection;
         boolean failDestroy;
         boolean failDiagnostics;
@@ -461,6 +597,9 @@ class AprilTagDetectionCudaPipeTest {
             createdWidth = width;
             createdHeight = height;
             createdNativeDecimate = decimate;
+            if (failCreate) {
+                throw new RuntimeException("create failed");
+            }
             return createCount;
         }
 
@@ -483,6 +622,9 @@ class AprilTagDetectionCudaPipeTest {
             this.cy = cy;
             this.k1 = k1;
             this.k3 = k3;
+            if (failCalibration) {
+                throw new RuntimeException("calibration failed");
+            }
         }
 
         @Override

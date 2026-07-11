@@ -269,14 +269,24 @@ public class AprilTagDetectionCudaPipe
         }
 
         CVMat resizedInput = new CVMat();
-        Imgproc.resize(inputMat, resizedInput.getMat(), new Size(width, height));
-        return new DetectionInput(
-                resizedInput.getMat(),
-                resizedInput,
-                1,
-                true,
-                inputMat.cols() / (double) width,
-                inputMat.rows() / (double) height);
+        boolean ownershipTransferred = false;
+        try {
+            Imgproc.resize(inputMat, resizedInput.getMat(), new Size(width, height));
+            var detectionInput =
+                    new DetectionInput(
+                            resizedInput.getMat(),
+                            resizedInput,
+                            1,
+                            true,
+                            inputMat.cols() / (double) width,
+                            inputMat.rows() / (double) height);
+            ownershipTransferred = true;
+            return detectionInput;
+        } finally {
+            if (!ownershipTransferred) {
+                resizedInput.release();
+            }
+        }
     }
 
     private boolean ensureDetector(DetectionInput input) {
