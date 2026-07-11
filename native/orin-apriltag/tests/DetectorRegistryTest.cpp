@@ -1,12 +1,13 @@
 #include "DetectorRegistry.h"
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <exception>
+#include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -48,6 +49,36 @@ bool RejectsInvalidHandle(Callable&& callable) {
     return true;
   }
   return false;
+}
+
+void CaptureFuture(std::future<void>& future,
+                   std::exception_ptr& first_error) {
+  if (!future.valid()) {
+    return;
+  }
+  try {
+    future.get();
+  } catch (...) {
+    if (!first_error) {
+      first_error = std::current_exception();
+    }
+  }
+}
+
+template <typename T>
+std::optional<T> CaptureFuture(std::future<T>& future,
+                               std::exception_ptr& first_error) {
+  if (!future.valid()) {
+    return std::nullopt;
+  }
+  try {
+    return future.get();
+  } catch (...) {
+    if (!first_error) {
+      first_error = std::current_exception();
+    }
+    return std::nullopt;
+  }
 }
 
 GrayFrame Frame() {
@@ -106,6 +137,14 @@ class BlockingBackend final : public DetectorBackend {
   std::shared_ptr<ConcurrentState> state_;
 };
 
+void Release(const std::shared_ptr<ConcurrentState>& state) {
+  {
+    std::scoped_lock lock(state->mutex);
+    state->release = true;
+  }
+  state->condition.notify_all();
+}
+
 struct LifecycleState {
   std::mutex mutex;
   std::condition_variable condition;
@@ -143,6 +182,14 @@ class LifecycleBackend final : public DetectorBackend {
  private:
   std::shared_ptr<LifecycleState> state_;
 };
+
+void Release(const std::shared_ptr<LifecycleState>& state) {
+  {
+    std::scoped_lock lock(state->mutex);
+    state->release_process = true;
+  }
+  state->condition.notify_all();
+}
 
 bool WaitForSize(DetectorRegistry& registry, std::size_t expected) {
   const auto deadline = std::chrono::steady_clock::now() + kTimeout;
@@ -234,19 +281,34 @@ void TestDifferentHandlesProcessConcurrently() {
   const auto first = registry.Create(640, 480, 2);
   const auto second = registry.Create(640, 480, 2);
 
-  std::thread first_thread([&] { registry.Process(first, Frame()); });
-  std::thread second_thread([&] { registry.Process(second, Frame()); });
+  auto first_future = std::async(
+      std::launch::async, [&] { registry.Process(first, Frame()); });
+  std::future<void> second_future;
+  try {
+    second_future = std::async(
+        std::launch::async, [&] { registry.Process(second, Frame()); });
+  } catch (...) {
+    const auto launch_error = std::current_exception();
+    Release(state);
+    std::exception_ptr worker_error;
+    CaptureFuture(first_future, worker_error);
+    std::rethrow_exception(launch_error);
+  }
 
   bool both_entered = false;
   {
     std::unique_lock lock(state->mutex);
     both_entered = state->condition.wait_for(
         lock, kTimeout, [&] { return state->entered == 2; });
-    state->release = true;
   }
-  state->condition.notify_all();
-  first_thread.join();
-  second_thread.join();
+  Release(state);
+
+  std::exception_ptr worker_error;
+  CaptureFuture(first_future, worker_error);
+  CaptureFuture(second_future, worker_error);
+  if (worker_error) {
+    std::rethrow_exception(worker_error);
+  }
 
   Require(both_entered,
           "Process serialized different handles behind the registry mutex");
@@ -259,7 +321,8 @@ void TestDestroyUnpublishesBeforeWaitingForProcess() {
   });
   const auto handle = registry.Create(640, 480, 2);
 
-  std::thread process_thread([&] { registry.Process(handle, Frame()); });
+  auto process_future = std::async(
+      std::launch::async, [&] { registry.Process(handle, Frame()); });
   bool process_entered = false;
   {
     std::unique_lock lock(state->mutex);
@@ -267,45 +330,109 @@ void TestDestroyUnpublishesBeforeWaitingForProcess() {
         lock, kTimeout, [&] { return state->process_entered; });
   }
   if (!process_entered) {
-    {
-      std::scoped_lock lock(state->mutex);
-      state->release_process = true;
+    Release(state);
+    std::exception_ptr worker_error;
+    CaptureFuture(process_future, worker_error);
+    if (worker_error) {
+      std::rethrow_exception(worker_error);
     }
-    state->condition.notify_all();
-    process_thread.join();
     Require(false, "Process did not enter the backend");
   }
 
-  std::atomic<bool> destroy_finished = false;
-  std::thread destroy_thread([&] {
-    registry.Destroy(handle);
-    destroy_finished = true;
-  });
+  std::future<void> destroy_future;
+  try {
+    destroy_future = std::async(
+        std::launch::async, [&] { registry.Destroy(handle); });
+  } catch (...) {
+    const auto launch_error = std::current_exception();
+    Release(state);
+    std::exception_ptr worker_error;
+    CaptureFuture(process_future, worker_error);
+    std::rethrow_exception(launch_error);
+  }
 
-  const bool removed_before_wait = WaitForSize(registry, 0);
-  const bool destroy_completed_while_blocked = destroy_finished.load();
-  const bool process_rejected = removed_before_wait &&
-                                RejectsInvalidHandle(
-                                    [&] { registry.Process(handle, Frame()); });
+  std::future<bool> size_future;
+  try {
+    size_future = std::async(
+        std::launch::async, [&] { return WaitForSize(registry, 0); });
+  } catch (...) {
+    const auto launch_error = std::current_exception();
+    Release(state);
+    std::exception_ptr worker_error;
+    CaptureFuture(process_future, worker_error);
+    CaptureFuture(destroy_future, worker_error);
+    std::rethrow_exception(launch_error);
+  }
 
+  const bool size_probe_timed_out =
+      size_future.wait_for(kTimeout) != std::future_status::ready;
+  const bool destroy_completed_while_blocked =
+      destroy_future.wait_for(0s) == std::future_status::ready;
+
+  std::exception_ptr async_error;
+  std::optional<bool> removed_before_wait;
+  if (!size_probe_timed_out) {
+    removed_before_wait = CaptureFuture(size_future, async_error);
+  }
+
+  std::future<bool> invalid_handle_future;
+  bool invalid_handle_probe_timed_out = false;
+  std::optional<bool> process_rejected;
+  if (!async_error && removed_before_wait.value_or(false)) {
+    try {
+      invalid_handle_future = std::async(std::launch::async, [&] {
+        return RejectsInvalidHandle(
+            [&] { registry.Process(handle, Frame()); });
+      });
+    } catch (...) {
+      async_error = std::current_exception();
+    }
+    if (invalid_handle_future.valid()) {
+      invalid_handle_probe_timed_out =
+          invalid_handle_future.wait_for(kTimeout) != std::future_status::ready;
+      if (!invalid_handle_probe_timed_out) {
+        process_rejected =
+            CaptureFuture(invalid_handle_future, async_error);
+      }
+    }
+  }
+
+  Release(state);
+  CaptureFuture(process_future, async_error);
+  CaptureFuture(destroy_future, async_error);
+  if (size_future.valid()) {
+    removed_before_wait = CaptureFuture(size_future, async_error);
+  }
+  if (invalid_handle_future.valid()) {
+    process_rejected = CaptureFuture(invalid_handle_future, async_error);
+  }
+  if (async_error) {
+    std::rethrow_exception(async_error);
+  }
+
+  bool process_returned = false;
+  bool destroyed = false;
+  bool used_after_destroy = false;
   {
     std::scoped_lock lock(state->mutex);
-    state->release_process = true;
+    process_returned = state->process_returned;
+    destroyed = state->destroyed;
+    used_after_destroy = state->used_after_destroy;
   }
-  state->condition.notify_all();
-  process_thread.join();
-  destroy_thread.join();
 
-  std::scoped_lock lock(state->mutex);
-  Require(removed_before_wait,
+  Require(!size_probe_timed_out,
+          "Size probe blocked behind in-flight Process");
+  Require(removed_before_wait.value_or(false),
           "Destroy did not remove the handle before waiting for Process");
   Require(!destroy_completed_while_blocked,
           "Destroy completed while Process was blocked");
-  Require(process_rejected, "Process after concurrent Destroy accepted a handle");
-  Require(state->process_returned, "Process did not return before Destroy");
-  Require(state->destroyed, "Destroy did not reset the backend");
-  Require(!state->used_after_destroy,
-          "Process accessed the backend after it was reset");
+  Require(!invalid_handle_probe_timed_out,
+          "Invalid-handle probe blocked after Destroy unpublished the handle");
+  Require(process_rejected.value_or(false),
+          "Process after concurrent Destroy accepted a handle");
+  Require(process_returned, "Process did not return before Destroy");
+  Require(destroyed, "Destroy did not reset the backend");
+  Require(!used_after_destroy, "Process accessed the backend after it was reset");
 }
 
 }  // namespace
@@ -314,10 +441,10 @@ int main() {
   try {
     TestCreateAndInvalidHandles();
     TestFactoryFailuresDoNotPublishSlots();
-    TestDifferentHandlesProcessConcurrently();
     TestDestroyUnpublishesBeforeWaitingForProcess();
+    TestDifferentHandlesProcessConcurrently();
   } catch (const std::exception& exception) {
-    return (std::fprintf(stderr, "%s\\n", exception.what()), 1);
+    return (std::fprintf(stderr, "%s\n", exception.what()), 1);
   }
   return 0;
 }

@@ -1,5 +1,6 @@
 #include "DetectorRegistry.h"
 
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -29,7 +30,11 @@ std::int64_t DetectorRegistry::Create(int width, int height, int decimate) {
   slot->detector = std::move(detector);
 
   std::scoped_lock lock(registry_mutex_);
-  const std::int64_t handle = next_handle_++;
+  if (next_handle_ == std::numeric_limits<std::int64_t>::max()) {
+    throw std::overflow_error("CUDA detector handle space exhausted");
+  }
+  const std::int64_t handle = next_handle_;
+  ++next_handle_;
   slots_.emplace(handle, std::move(slot));
   return handle;
 }

@@ -73,3 +73,4 @@ target_include_directories(detector_registry_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/jni")
 target_link_libraries(detector_registry_test PRIVATE Threads::Threads)
 add_test(NAME detector_registry_test COMMAND detector_registry_test)
+set_tests_properties(detector_registry_test PROPERTIES TIMEOUT 10)
