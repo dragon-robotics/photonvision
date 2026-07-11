@@ -10,8 +10,22 @@ export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --build-dir) BUILD_DIR="${2:?missing build directory}"; shift 2 ;;
-        --source-revision) SOURCE_REVISION="${2:?missing source revision}"; shift 2 ;;
+        --build-dir)
+            if [[ $# -lt 2 || -z "${2-}" || "${2-}" == -* ]]; then
+                echo "Missing value for --build-dir" >&2
+                exit 2
+            fi
+            BUILD_DIR="$2"
+            shift 2
+            ;;
+        --source-revision)
+            if [[ $# -lt 2 || -z "${2-}" || "${2-}" == -* ]]; then
+                echo "Missing value for --source-revision" >&2
+                exit 2
+            fi
+            SOURCE_REVISION="$2"
+            shift 2
+            ;;
         --check-only) CHECK_ONLY="yes"; shift ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
@@ -27,6 +41,32 @@ command -v cmake >/dev/null || { echo "Install cmake" >&2; exit 1; }
 command -v ninja >/dev/null || { echo "Install ninja-build" >&2; exit 1; }
 command -v javac >/dev/null || { echo "Install openjdk-17-jdk" >&2; exit 1; }
 [[ "$(javac -version 2>&1)" == javac\ 17.* ]] || { echo "JDK 17 is required" >&2; exit 1; }
+
+NVCC_VERSION_OUTPUT="$(nvcc --version 2>&1)"
+if [[ "${NVCC_VERSION_OUTPUT}" =~ release[[:space:]]+([0-9]+\.[0-9]+) ]]; then
+    NVCC_RELEASE="${BASH_REMATCH[1]}"
+else
+    echo "Unable to parse nvcc CUDA release; observed output: ${NVCC_VERSION_OUTPUT}" >&2
+    exit 1
+fi
+[[ "${NVCC_RELEASE}" == "13.2" ]] || {
+    echo "CUDA 13.2 is required; observed version ${NVCC_RELEASE}" >&2
+    exit 1
+}
+
+CMAKE_VERSION_OUTPUT="$(cmake --version 2>&1)"
+if [[ "${CMAKE_VERSION_OUTPUT}" =~ ^cmake[[:space:]]+version[[:space:]]+([0-9]+)\.([0-9]+)(\.[0-9]+)? ]]; then
+    CMAKE_VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+    CMAKE_MAJOR="${BASH_REMATCH[1]}"
+    CMAKE_MINOR="${BASH_REMATCH[2]}"
+else
+    echo "Unable to parse CMake version; observed output: ${CMAKE_VERSION_OUTPUT}" >&2
+    exit 1
+fi
+if (( CMAKE_MAJOR < 3 || (CMAKE_MAJOR == 3 && CMAKE_MINOR < 28) )); then
+    echo "CMake >=3.28 is required; observed version ${CMAKE_VERSION}" >&2
+    exit 1
+fi
 
 [[ "${CHECK_ONLY}" == "yes" ]] && exit 0
 
