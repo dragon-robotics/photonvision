@@ -161,3 +161,6 @@ photon-client/playwright/.auth/
 shell.nix
 flake.nix
 flake.lock
+
+# Local isolated development worktrees
+.worktrees/
