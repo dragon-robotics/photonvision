@@ -404,6 +404,60 @@ class AprilTagDetectionCudaPipeTest {
     }
 
     @Test
+    void sameAlignedDetectorSizeRecreatesForNewSourceCalibrationScale() {
+        var backend = new FakeBackend();
+        var pipe = new AprilTagDetectionCudaPipe(backend);
+        var firstImage = grayImage(1600, 1304);
+        var secondImage = grayImage(1599, 1303);
+        try {
+            pipe.setEnabled(true);
+            pipe.setParams(new AprilTagDetectionCudaPipe.AprilTagDetectionCudaPipeParams(3));
+            pipe.setCalibration(
+                    new AprilTagDetectionCudaPipe.Calibration(1000, 800, 700, 600, 1, 2, 3, 4, 5));
+            pipe.run(firstImage);
+            pipe.run(secondImage);
+
+            assertEquals(2, backend.createCount);
+            assertEquals(1, backend.destroyCount);
+            assertEquals(2, backend.calibrationCount);
+            assertEquals(1000 * 528.0 / 1599.0, backend.fx, 1e-9);
+            assertEquals(800 * 432.0 / 1303.0, backend.fy, 1e-9);
+            assertEquals(700 * 528.0 / 1599.0, backend.cx, 1e-9);
+            assertEquals(600 * 432.0 / 1303.0, backend.cy, 1e-9);
+        } finally {
+            firstImage.release();
+            secondImage.release();
+            pipe.release();
+        }
+    }
+
+    @Test
+    void nativeToJavaResizeRecreatesWhenDetectorDimensionsMatch() {
+        var backend = new FakeBackend();
+        var pipe = new AprilTagDetectionCudaPipe(backend);
+        var nativeImage = grayImage(528, 432);
+        var resizedImage = grayImage(1599, 1303);
+        try {
+            pipe.setEnabled(true);
+            pipe.setCalibration(
+                    new AprilTagDetectionCudaPipe.Calibration(1000, 800, 700, 600, 1, 2, 3, 4, 5));
+            pipe.run(nativeImage);
+            pipe.setParams(new AprilTagDetectionCudaPipe.AprilTagDetectionCudaPipeParams(3));
+            pipe.run(resizedImage);
+
+            assertEquals(2, backend.createCount);
+            assertEquals(1, backend.destroyCount);
+            assertEquals(2, backend.calibrationCount);
+            assertEquals(1000 * 528.0 / 1599.0, backend.fx, 1e-9);
+            assertEquals(800 * 432.0 / 1303.0, backend.fy, 1e-9);
+        } finally {
+            nativeImage.release();
+            resizedImage.release();
+            pipe.release();
+        }
+    }
+
+    @Test
     void nativeDecimationCalibrationIsNotScaled() {
         var backend = new FakeBackend();
         var pipe = new AprilTagDetectionCudaPipe(backend);

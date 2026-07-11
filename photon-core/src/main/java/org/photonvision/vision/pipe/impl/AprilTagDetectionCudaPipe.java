@@ -259,7 +259,8 @@ public class AprilTagDetectionCudaPipe
     private DetectionInput createDetectionInput(CVMat input, Mat inputMat) {
         int decimate = normalizeDecimate(params.decimate());
         if (decimate <= 2) {
-            return new DetectionInput(inputMat, null, decimate, false, 1, 1);
+            return new DetectionInput(
+                    inputMat, null, decimate, false, inputMat.cols(), inputMat.rows());
         }
 
         int width = alignDown(inputMat.cols() / decimate, NATIVE_ALIGNMENT);
@@ -278,8 +279,8 @@ public class AprilTagDetectionCudaPipe
                             resizedInput,
                             1,
                             true,
-                            inputMat.cols() / (double) width,
-                            inputMat.rows() / (double) height);
+                            inputMat.cols(),
+                            inputMat.rows());
             ownershipTransferred = true;
             return detectionInput;
         } finally {
@@ -293,7 +294,10 @@ public class AprilTagDetectionCudaPipe
         if (state == State.ACTIVE
                 && (activeWidth != input.mat().cols()
                         || activeHeight != input.mat().rows()
-                        || activeNativeDecimate != input.nativeDecimate())) {
+                        || activeNativeDecimate != input.nativeDecimate()
+                        || activeSourceWidth != input.sourceWidth()
+                        || activeSourceHeight != input.sourceHeight()
+                        || activeUsesJavaResize != input.usesJavaResize())) {
             try {
                 destroyCurrentHandle();
                 state = State.IDLE;
@@ -318,8 +322,8 @@ public class AprilTagDetectionCudaPipe
             activeWidth = input.mat().cols();
             activeHeight = input.mat().rows();
             activeNativeDecimate = input.nativeDecimate();
-            activeSourceWidth = Math.round(input.mat().cols() * (float) input.xScale());
-            activeSourceHeight = Math.round(input.mat().rows() * (float) input.yScale());
+            activeSourceWidth = input.sourceWidth();
+            activeSourceHeight = input.sourceHeight();
             activeUsesJavaResize = input.usesJavaResize();
             appliedCalibration = null;
             logMemory("after creation");
@@ -455,8 +459,16 @@ public class AprilTagDetectionCudaPipe
             CVMat ownedResize,
             int nativeDecimate,
             boolean usesJavaResize,
-            double xScale,
-            double yScale) {}
+            int sourceWidth,
+            int sourceHeight) {
+        private double xScale() {
+            return sourceWidth / (double) mat.cols();
+        }
+
+        private double yScale() {
+            return sourceHeight / (double) mat.rows();
+        }
+    }
 
     private static final class JniBackend implements Backend {
         @Override
