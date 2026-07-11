@@ -242,6 +242,22 @@ target_compile_options(orin_apriltag_backend PRIVATE
 target_link_libraries(orin_apriltag_backend
     PUBLIC CUDA::cudart apriltag_vendor Threads::Threads)
 
+add_library(lib971apriltag SHARED
+    jni/GpuDetectorJNI.cpp
+    jni/DetectorRegistry.cpp)
+set_target_properties(lib971apriltag PROPERTIES
+    OUTPUT_NAME 971apriltag
+    POSITION_INDEPENDENT_CODE ON)
+target_include_directories(lib971apriltag PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/jni"
+    "${PV_GENERATED_INCLUDE_DIR}")
+target_link_libraries(lib971apriltag PRIVATE
+    orin_apriltag_backend
+    CUDA::cudart
+    apriltag_vendor
+    JNI::JNI
+    Threads::Threads)
+
 add_executable(detector_registry_test
     jni/DetectorRegistry.cpp
     tests/DetectorRegistryTest.cpp)
