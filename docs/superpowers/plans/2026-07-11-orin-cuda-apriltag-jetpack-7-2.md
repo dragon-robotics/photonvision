@@ -30,6 +30,7 @@
 - `native/orin-apriltag/VENDOR_MANIFEST.sha256`: SHA-256 manifest for every vendored upstream file.
 - `native/orin-apriltag/upstream/frc971/orin/`: pinned CUDA implementation.
 - `native/orin-apriltag/upstream/third_party/apriltag/`: pinned AprilTag C implementation and license.
+- `native/orin-apriltag/overrides/frc971/orin/cuda.h`: local throwing-check override staged at build time without modifying pinned source.
 - `native/orin-apriltag/jni/DetectorRegistry.h`: handle registry and testable detector interface.
 - `native/orin-apriltag/jni/DetectorRegistry.cpp`: concurrent handle lifecycle.
 - `native/orin-apriltag/jni/CudaAprilTagDetector.h`: RAII detector declaration.
@@ -356,7 +357,7 @@ class DetectorRegistry {
 }
 ```
 
-Write `DetectorRegistryTest.cpp` with a fake backend and assertions for unique handles, invalid handles, injected factory failure leaving `Size()==0`, idempotent rejection of double destroy, and two threads processing different handles concurrently. Add a `detector_registry_test` CMake target linking only Threads. Create `DetectorRegistry.cpp` containing only `#include "DetectorRegistry.h"` so the first build reaches the linker and proves the methods are absent.
+Write `DetectorRegistryTest.cpp` with a fake backend and assertions for unique handles, invalid handles, injected factory failure leaving `Size()==0`, rejection of a double destroy with `std::invalid_argument` while keeping `Size()==0`, and two threads processing different handles concurrently. Add a `detector_registry_test` CMake target linking only Threads. Create `DetectorRegistry.cpp` containing only `#include "DetectorRegistry.h"` so the first build reaches the linker and proves the methods are absent.
 
 - [ ] **Step 2: Run the native test and observe the missing implementation failure**
 
@@ -431,12 +432,12 @@ git commit -m "feat: add safe CUDA detector handle registry"
 - Create: `native/orin-apriltag/jni/CudaAprilTagDetector.cu`
 - Create: `native/orin-apriltag/jni/GpuDetectorJNI.cpp`
 - Create: `native/orin-apriltag/tests/CudaDetectorSmokeTest.cpp`
-- Modify: `native/orin-apriltag/upstream/frc971/orin/cuda.h`
+- Create: `native/orin-apriltag/overrides/frc971/orin/cuda.h`
 - Modify: `native/orin-apriltag/CMakeLists.txt`
 
 **Interfaces:**
 - Consumes: Task 3 `DetectorBackend` and `DetectorRegistry`.
-- Produces: `lib971apriltag.so` implementing the Java JNI contract and memory/build diagnostics.
+- Produces: `lib971apriltag.so` implementing the Java JNI contract and memory/build diagnostics while leaving the Task 1 vendor manifest valid.
 
 - [ ] **Step 1: Write a failing CUDA smoke test**
 
@@ -450,9 +451,9 @@ cmake --build build/orin-apriltag --target cuda_detector_smoke_test
 
 Expected: FAIL because `CudaAprilTagDetector` is missing.
 
-- [ ] **Step 2: Replace non-failing CUDA checks**
+- [ ] **Step 2: Replace non-failing CUDA checks in a staged override**
 
-In the vendored `cuda.h`, replace logging-only CUDA checks and `assert`-based checks with exceptions. The core helper must be:
+Copy the pinned `upstream/frc971/orin/cuda.h` to `overrides/frc971/orin/cuda.h`, then replace its logging-only CUDA checks and `assert`-based checks with exceptions. Do not edit any file under `upstream/`; the Task 1 manifest must continue to match the approved upstream revision. The core helper must be:
 
 ```cpp
 inline void CheckCuda(cudaError_t status, const char* expression,
@@ -473,6 +474,8 @@ inline void CheckCuda(cudaError_t status, const char* expression,
 ```
 
 No CUDA allocation may leave an uninitialized pointer after failure.
+
+During CMake configuration, copy `upstream/frc971/orin` into `${CMAKE_CURRENT_BINARY_DIR}/staged/frc971/orin`, overwrite only the staged `cuda.h` with the checked-in override, and compile the CUDA sources from that staged directory. Put the staged include root before the pinned upstream include root so `frc971/orin/...` resolves to the staged CUDA implementation while `third_party/...` still resolves to the pinned source tree.
 
 - [ ] **Step 3: Implement the RAII detector backend**
 
@@ -527,17 +530,17 @@ Result GuardJni(JNIEnv* env, Result failure, Callable&& callable) {
 
 Use `-1` for failed handle creation, `nullptr` for failed object/array/string creation, and `0` for failed memory queries. Add a `GuardJniVoid` overload for calibration and destruction.
 
-Add the shared-library and smoke-test targets to CMake using this exact CUDA source list:
+Add the shared-library and smoke-test targets to CMake using this exact CUDA source list, where `ORIN_CUDA_SOURCE_DIR` is `${CMAKE_CURRENT_BINARY_DIR}/staged/frc971/orin`:
 
 ```cmake
 set(ORIN_CUDA_SOURCES
-    upstream/frc971/orin/971apriltag.cu
-    upstream/frc971/orin/apriltag_detect.cu
-    upstream/frc971/orin/labeling_allegretti_2019_BKE.cu
-    upstream/frc971/orin/line_fit_filter.cu
-    upstream/frc971/orin/points.cu
-    upstream/frc971/orin/threshold.cu
-    upstream/frc971/orin/cuda.cc
+    ${ORIN_CUDA_SOURCE_DIR}/971apriltag.cu
+    ${ORIN_CUDA_SOURCE_DIR}/apriltag_detect.cu
+    ${ORIN_CUDA_SOURCE_DIR}/labeling_allegretti_2019_BKE.cu
+    ${ORIN_CUDA_SOURCE_DIR}/line_fit_filter.cu
+    ${ORIN_CUDA_SOURCE_DIR}/points.cu
+    ${ORIN_CUDA_SOURCE_DIR}/threshold.cu
+    ${ORIN_CUDA_SOURCE_DIR}/cuda.cc
     jni/CudaAprilTagDetector.cu
     jni/DetectorRegistry.cpp
     jni/GpuDetectorJNI.cpp)
@@ -549,6 +552,14 @@ Implement `getCudaFreeMemoryBytes`, `getCudaTotalMemoryBytes`, and `getBuildInfo
 
 - [ ] **Step 5: Build and run native tests on JetPack 7.2**
 
+Run the vendor-integrity gate on the Windows host before copying sources:
+
+```powershell
+powershell -NoProfile -File scripts/tests/verify-orin-cuda-vendor.ps1
+```
+
+Then build and inspect the library on the Jetson:
+
 ```bash
 bash scripts/build-orin-cuda-apriltag.sh
 file build/orin-apriltag/lib971apriltag.so
@@ -558,6 +569,7 @@ ldd build/orin-apriltag/lib971apriltag.so
 Expected:
 
 - CTest passes registry and CUDA smoke tests.
+- The vendor verifier still passes after the local CUDA-check override is added.
 - The library is AArch64.
 - `ldd` shows CUDA/runtime system dependencies but no `libwpiutil.so` and no OpenCV library.
 - Repeated create/process/destroy returns CUDA free memory within 32 MiB of baseline.
