@@ -1,4 +1,5 @@
 import { decode, encode } from "@msgpack/msgpack";
+import { isDeepStrictEqual } from "node:util";
 
 const [host, cameraUniqueName, settingsJson] = process.argv.slice(2);
 
@@ -9,8 +10,16 @@ if (!host || !cameraUniqueName || !settingsJson) {
 }
 
 const settings = JSON.parse(settingsJson);
-if (settings === null || Array.isArray(settings) || typeof settings !== "object") {
-  throw new Error("Settings JSON must be an object");
+if (
+  settings === null ||
+  Array.isArray(settings) ||
+  typeof settings !== "object" ||
+  Object.getPrototypeOf(settings) !== Object.prototype
+) {
+  throw new Error("Settings JSON must be a plain object");
+}
+if (Object.keys(settings).length === 0) {
+  throw new Error("Settings JSON object must not be empty");
 }
 
 const socket = new WebSocket(`ws://${host}/websocket_data`);
@@ -25,7 +34,9 @@ const timeout = setTimeout(() => {
 }, 5000);
 
 const finishIfConfirmed = () => {
-  const confirmed = Object.entries(settings).every(([key, value]) => confirmedSettings[key] === value);
+  const confirmed = Object.entries(settings).every(([key, value]) =>
+    isDeepStrictEqual(confirmedSettings[key], value)
+  );
   if (!confirmed) return false;
 
   clearTimeout(timeout);
