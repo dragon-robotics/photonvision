@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEAM_NUMBER="2375"
 STATIC_ADDRESS="10.23.75.15/8"
 GATEWAY="10.23.75.4"
@@ -26,11 +27,11 @@ headless PhotonVision baseline.
 
 Options:
   --jar <path>              PhotonVision linuxarm64 JAR to install.
-  --no-apt                  Do not apt-install Java, NetworkManager, or SSH.
+  --no-apt                  Do not apt-install Java, CUDA build dependencies, NetworkManager, or SSH.
   --keep-gui                Do not switch the system target to headless mode.
   --no-performance-service  Do not install the nvpmodel/jetson_clocks service.
   --cuda-apriltag-library <path>
-                            Install a JetPack-compatible lib971apriltag.so.
+                            Use an existing JetPack-compatible lib971apriltag.so instead of building it.
   --uvc-bandwidth-fix       Set uvcvideo quirks=128 for two USB 3 cameras.
   --defer-usb-device <id>   Rebind one USB device after PhotonVision starts.
   --reset-photon-config     Remove PhotonVision config DB/settings on this image.
@@ -141,7 +142,30 @@ export DEBIAN_FRONTEND=noninteractive
 
 if [[ "${INSTALL_PACKAGES}" == "yes" ]]; then
     apt-get update
-    apt-get install -y openjdk-17-jre-headless network-manager openssh-server
+    apt-get install -y \
+        build-essential \
+        cmake \
+        git \
+        network-manager \
+        ninja-build \
+        nvidia-cuda-dev \
+        openjdk-17-jdk-headless \
+        openssh-server
+fi
+
+if [[ -z "${CUDA_APRILTAG_LIBRARY}" ]]; then
+    if [[ ! -f "${ROOT}/scripts/build-orin-cuda-apriltag.sh" ]]; then
+        echo "Cannot build CUDA AprilTag library: PhotonVision source tree is incomplete." >&2
+        exit 1
+    fi
+    echo "Building CUDA AprilTag library for this JetPack installation."
+    bash "${ROOT}/scripts/build-orin-cuda-apriltag.sh"
+    CUDA_APRILTAG_LIBRARY="${ROOT}/build/orin-apriltag/lib971apriltag.so"
+fi
+
+if [[ ! -f "${CUDA_APRILTAG_LIBRARY}" ]]; then
+    echo "CUDA AprilTag build did not produce ${CUDA_APRILTAG_LIBRARY}." >&2
+    exit 1
 fi
 
 if [[ "${UVC_BANDWIDTH_FIX}" == "yes" ]]; then
