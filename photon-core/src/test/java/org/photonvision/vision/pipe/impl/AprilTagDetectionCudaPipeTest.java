@@ -378,6 +378,33 @@ class AprilTagDetectionCudaPipeTest {
     }
 
     @Test
+    void unalignedNativeInputResizesAndScalesCalibration() {
+        var backend = new FakeBackend();
+        var pipe = new AprilTagDetectionCudaPipe(backend);
+        var image = grayImage(1919, 1079);
+        try {
+            pipe.setEnabled(true);
+            pipe.setCalibration(
+                    new AprilTagDetectionCudaPipe.Calibration(1000, 800, 700, 600, 1, 2, 3, 4, 5));
+
+            pipe.run(image);
+
+            assertEquals(1912, backend.createdWidth);
+            assertEquals(1072, backend.createdHeight);
+            assertEquals(1, backend.createdNativeDecimate);
+            assertEquals(1912, backend.detectedWidth);
+            assertEquals(1072, backend.detectedHeight);
+            assertEquals(1000 * 1912.0 / 1919.0, backend.fx, 1e-9);
+            assertEquals(800 * 1072.0 / 1079.0, backend.fy, 1e-9);
+            assertEquals(700 * 1912.0 / 1919.0, backend.cx, 1e-9);
+            assertEquals(600 * 1072.0 / 1079.0, backend.cy, 1e-9);
+        } finally {
+            image.release();
+            pipe.release();
+        }
+    }
+
+    @Test
     void calibrationScalesOnlyForJavaResizeAndAvoidsRedundantUpdates() {
         var backend = new FakeBackend();
         var pipe = new AprilTagDetectionCudaPipe(backend);

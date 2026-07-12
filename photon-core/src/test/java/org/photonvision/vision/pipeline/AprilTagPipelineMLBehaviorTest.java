@@ -324,6 +324,35 @@ public class AprilTagPipelineMLBehaviorTest {
     }
 
     @Test
+    public void extendedOpenCvCalibrationFallsBackToCpuDetection() {
+        var cudaPipe = new FakeAprilTagDetectionCudaPipe();
+        var cpuPipe = new FakeAprilTagDetectionPipe(List.of(makeDetection(14)));
+        var pipeline = newCudaTestPipeline(cudaPipe, cpuPipe, new FakeAprilTagMLHybridPipe());
+        pipeline.getSettings().useCudaTagDetection = true;
+        pipeline.getSettings().useMLDetection = false;
+        pipeline.getSettings().solvePNPEnabled = false;
+        var extendedDistortion =
+                makeCalibration(
+                        validIntrinsics(),
+                        new JsonMatOfDouble(
+                                1,
+                                8,
+                                new double[] {0.1, -0.2, 0.003, -0.004, 0.05, 0.06, -0.07, 0.08}));
+        var frame = makeFrame(extendedDistortion);
+
+        var result = pipeline.run(frame, QuirkyCamera.DefaultCamera);
+
+        assertEquals(List.of(false), cudaPipe.enabledTransitions);
+        assertTrue(cudaPipe.calibrationUpdates.isEmpty());
+        assertEquals(1, cpuPipe.runCount);
+        assertEquals(1, result.targets.size());
+        result.release();
+        frame.release();
+        extendedDistortion.release();
+        pipeline.release();
+    }
+
+    @Test
     public void initiallyUnavailableCudaFallsBackToMl() {
         var cudaPipe = new FakeAprilTagDetectionCudaPipe();
         cudaPipe.available = false;

@@ -208,7 +208,7 @@ public class AprilTagDetectionCudaPipe
                 return List.of();
             }
 
-            var detectionInput = createDetectionInput(in, input);
+            var detectionInput = createDetectionInput(input);
             resizedInput = detectionInput.ownedResize();
             if (!ensureDetector(detectionInput)) {
                 return List.of();
@@ -256,17 +256,23 @@ public class AprilTagDetectionCudaPipe
         state = State.RELEASED;
     }
 
-    private DetectionInput createDetectionInput(CVMat input, Mat inputMat) {
+    private DetectionInput createDetectionInput(Mat inputMat) {
         int decimate = normalizeDecimate(params.decimate());
-        if (decimate <= 2) {
-            return new DetectionInput(
-                    inputMat, null, decimate, false, inputMat.cols(), inputMat.rows());
-        }
-
-        int width = alignDown(inputMat.cols() / decimate, NATIVE_ALIGNMENT);
-        int height = alignDown(inputMat.rows() / decimate, NATIVE_ALIGNMENT);
+        int resizeDivisor = decimate > 2 ? decimate : 1;
+        int width = alignDown(inputMat.cols() / resizeDivisor, NATIVE_ALIGNMENT);
+        int height = alignDown(inputMat.rows() / resizeDivisor, NATIVE_ALIGNMENT);
         if (width < NATIVE_ALIGNMENT || height < NATIVE_ALIGNMENT) {
             throw new IllegalArgumentException("CUDA AprilTag resized image is too small");
+        }
+
+        if (width == inputMat.cols() && height == inputMat.rows()) {
+            return new DetectionInput(
+                    inputMat,
+                    null,
+                    nativeDecimate(decimate),
+                    false,
+                    inputMat.cols(),
+                    inputMat.rows());
         }
 
         CVMat resizedInput = new CVMat();
@@ -277,7 +283,7 @@ public class AprilTagDetectionCudaPipe
                     new DetectionInput(
                             resizedInput.getMat(),
                             resizedInput,
-                            1,
+                            nativeDecimate(decimate),
                             true,
                             inputMat.cols(),
                             inputMat.rows());

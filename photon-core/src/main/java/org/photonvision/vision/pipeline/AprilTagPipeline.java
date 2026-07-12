@@ -133,7 +133,9 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
     @Override
     protected void setPipeParamsImpl() {
         boolean cudaEnabled =
-                settings.useCudaTagDetection && settings.tagFamily == AprilTagFamily.kTag36h11;
+                settings.useCudaTagDetection
+                        && settings.tagFamily == AprilTagFamily.kTag36h11
+                        && !hasUnsupportedCudaDistortion(frameStaticProperties.cameraCalibration);
         cudaDetectionPipe.setEnabled(cudaEnabled);
         if (cudaEnabled) {
             cudaDetectionPipe.setParams(new AprilTagDetectionCudaPipeParams(settings.decimate));
@@ -306,7 +308,22 @@ public class AprilTagPipeline extends CVPipeline<CVPipelineResult, AprilTagPipel
     }
 
     private static boolean isSupportedDistortionCount(int count) {
-        return count == 4 || count == 5 || count == 8 || count == 12 || count == 14;
+        return count == 4 || count == 5;
+    }
+
+    private static boolean hasUnsupportedCudaDistortion(CameraCalibrationCoefficients calibration) {
+        if (calibration == null || !hasExpectedData(calibration.distCoeffs)) {
+            return false;
+        }
+
+        try {
+            Mat distortion = calibration.getDistCoeffsMat();
+            return (distortion.rows() == 1 || distortion.cols() == 1)
+                    && distortion.channels() == 1
+                    && !isSupportedDistortionCount((int) distortion.total());
+        } catch (RuntimeException error) {
+            return false;
+        }
     }
 
     private static boolean allFinite(double[] values) {
