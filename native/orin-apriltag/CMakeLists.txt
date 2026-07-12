@@ -283,3 +283,14 @@ target_link_options(cuda_detector_smoke_test PRIVATE
     -Wl,--wrap=cudaEventDestroy)
 add_test(NAME cuda_detector_smoke_test COMMAND cuda_detector_smoke_test)
 set_tests_properties(cuda_detector_smoke_test PROPERTIES TIMEOUT 180)
+
+add_executable(undistort_test
+    tests/UndistortTest.cpp)
+target_include_directories(undistort_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/staged"
+    "${ORIN_UPSTREAM_ROOT}"
+    "${CUDAToolkit_INCLUDE_DIRS}/cccl")
+target_link_libraries(undistort_test PRIVATE
+    orin_apriltag_backend
+    CUDA::cudart)
+add_test(NAME undistort_test COMMAND undistort_test)

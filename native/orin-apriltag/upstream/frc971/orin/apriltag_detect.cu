@@ -371,7 +371,7 @@ bool GpuDetector::UnDistort(double *u, double *v,
 
     double radial_distortion_inv = 1 / radial_distortion;
 
-    double tangential_dx = 2 * p1 * xP * yP + p2 * (rSq + k3 * rSq * rSq * rSq);
+    double tangential_dx = 2 * p1 * xP * yP + p2 * (rSq + 2 * xP * xP);
     double tangential_dy = p1 * (rSq + 2 * yP * yP) + 2 * p2 * xP * yP;
 
     xP = (x0 - tangential_dx) * radial_distortion_inv;
