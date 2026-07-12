@@ -269,6 +269,17 @@ set_tests_properties(detector_registry_test PROPERTIES TIMEOUT 10)
 
 add_executable(cuda_detector_smoke_test
     tests/CudaDetectorSmokeTest.cpp)
-target_link_libraries(cuda_detector_smoke_test PRIVATE orin_apriltag_backend)
+target_link_libraries(cuda_detector_smoke_test PRIVATE
+    orin_apriltag_backend
+    CUDA::cuda_driver)
+target_link_options(cuda_detector_smoke_test PRIVATE
+    -Wl,--wrap=cudaMalloc
+    -Wl,--wrap=cudaFree
+    -Wl,--wrap=cudaMallocHost
+    -Wl,--wrap=cudaFreeHost
+    -Wl,--wrap=cudaStreamCreate
+    -Wl,--wrap=cudaStreamDestroy
+    -Wl,--wrap=cudaEventCreate
+    -Wl,--wrap=cudaEventDestroy)
 add_test(NAME cuda_detector_smoke_test COMMAND cuda_detector_smoke_test)
 set_tests_properties(cuda_detector_smoke_test PROPERTIES TIMEOUT 180)
