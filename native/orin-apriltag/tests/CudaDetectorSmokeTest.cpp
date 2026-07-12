@@ -3,6 +3,8 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +13,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -50,11 +53,58 @@ struct TrackedCudaResources {
   std::unordered_set<void*> events;
 };
 
+struct TrackedCudaActivity {
+  std::size_t device_allocation_calls = 0;
+  std::size_t pinned_host_allocation_calls = 0;
+  std::size_t stream_creation_calls = 0;
+  std::size_t event_creation_calls = 0;
+};
+
+constexpr std::size_t kMeasuredLifecycleCount = 5;
+
+struct FreeMemorySample {
+  std::size_t before;
+  std::size_t after;
+};
+
+std::size_t DirectionalRetainedDelta(const FreeMemorySample& sample) {
+  return sample.before > sample.after ? sample.before - sample.after : 0;
+}
+
+std::size_t MedianDirectionalRetainedDelta(
+    const std::array<FreeMemorySample, kMeasuredLifecycleCount>& samples) {
+  std::array<std::size_t, kMeasuredLifecycleCount> retained_deltas{};
+  for (std::size_t index = 0; index < samples.size(); ++index) {
+    retained_deltas[index] = DirectionalRetainedDelta(samples[index]);
+  }
+  std::sort(retained_deltas.begin(), retained_deltas.end());
+  return retained_deltas[retained_deltas.size() / 2];
+}
+
+void TestMedianDirectionalRetainedDelta() {
+  const std::array<FreeMemorySample, kMeasuredLifecycleCount> samples{{
+      {.before = 100, .after = 90},
+      {.before = 100, .after = 130},
+      {.before = 100, .after = 70},
+      {.before = 100, .after = 50},
+      {.before = 100, .after = 80},
+  }};
+  constexpr std::size_t kExpectedMedian = 20;
+  const std::size_t actual_median =
+      MedianDirectionalRetainedDelta(samples);
+  if (actual_median != kExpectedMedian) {
+    throw std::runtime_error(
+        "Directional retained-delta median helper expected 20, got " +
+        std::to_string(actual_median));
+  }
+}
+
 std::mutex resource_mutex;
 std::unordered_map<void*, std::size_t> device_allocations;
 std::unordered_map<void*, std::size_t> pinned_host_allocations;
 std::unordered_set<void*> streams;
 std::unordered_set<void*> events;
+TrackedCudaActivity tracked_activity;
 
 TrackedCudaResources SnapshotTrackedResources() {
   std::scoped_lock lock(resource_mutex);
@@ -66,12 +116,43 @@ TrackedCudaResources SnapshotTrackedResources() {
   };
 }
 
+TrackedCudaActivity SnapshotTrackedActivity() {
+  std::scoped_lock lock(resource_mutex);
+  return tracked_activity;
+}
+
+std::string ResourceCounts(const TrackedCudaResources& resources) {
+  std::ostringstream message;
+  message << "device_allocations=" << resources.device_allocations.size()
+          << " pinned_host_allocations="
+          << resources.pinned_host_allocations.size()
+          << " streams=" << resources.streams.size()
+          << " events=" << resources.events.size();
+  return message.str();
+}
+
 void RequireResourcesRestored(const TrackedCudaResources& before,
-                              const TrackedCudaResources& after) {
+                              const TrackedCudaResources& after,
+                              const std::string& lifecycle) {
   if (before.device_allocations != after.device_allocations ||
       before.pinned_host_allocations != after.pinned_host_allocations ||
       before.streams != after.streams || before.events != after.events) {
-    throw std::runtime_error("CUDA RAII resources were retained after destroy");
+    throw std::runtime_error(
+        "CUDA RAII resources were retained after " + lifecycle +
+        ": before " + ResourceCounts(before) + "; after " +
+        ResourceCounts(after));
+  }
+}
+
+void RequireWarmupActivity(const TrackedCudaActivity& before,
+                           const TrackedCudaActivity& after) {
+  if (after.device_allocation_calls <= before.device_allocation_calls ||
+      after.pinned_host_allocation_calls <=
+          before.pinned_host_allocation_calls ||
+      after.stream_creation_calls <= before.stream_creation_calls ||
+      after.event_creation_calls <= before.event_creation_calls) {
+    throw std::runtime_error(
+        "Warmup did not exercise every wrapped CUDA resource category");
   }
 }
 
@@ -110,6 +191,7 @@ cudaError_t __wrap_cudaMalloc(void** pointer, std::size_t bytes) {
   if (status == cudaSuccess && pointer != nullptr && *pointer != nullptr) {
     std::scoped_lock lock(resource_mutex);
     device_allocations[*pointer] = bytes;
+    ++tracked_activity.device_allocation_calls;
   }
   return status;
 }
@@ -128,6 +210,7 @@ cudaError_t __wrap_cudaMallocHost(void** pointer, std::size_t bytes) {
   if (status == cudaSuccess && pointer != nullptr && *pointer != nullptr) {
     std::scoped_lock lock(resource_mutex);
     pinned_host_allocations[*pointer] = bytes;
+    ++tracked_activity.pinned_host_allocation_calls;
   }
   return status;
 }
@@ -146,6 +229,7 @@ cudaError_t __wrap_cudaStreamCreate(cudaStream_t* stream) {
   if (status == cudaSuccess && stream != nullptr && *stream != nullptr) {
     std::scoped_lock lock(resource_mutex);
     streams.insert(static_cast<void*>(*stream));
+    ++tracked_activity.stream_creation_calls;
   }
   return status;
 }
@@ -164,6 +248,7 @@ cudaError_t __wrap_cudaEventCreate(cudaEvent_t* event) {
   if (status == cudaSuccess && event != nullptr && *event != nullptr) {
     std::scoped_lock lock(resource_mutex);
     events.insert(static_cast<void*>(*event));
+    ++tracked_activity.event_creation_calls;
   }
   return status;
 }
@@ -185,7 +270,10 @@ int main() {
     constexpr int kHeight = 800;
     constexpr int kDecimate = 2;
     constexpr int kFrameCount = 120;
-    constexpr int kMeasuredLifecycleCount = 5;
+    constexpr std::size_t kAllowedRetainedDelta =
+        32ULL * 1024ULL * 1024ULL;
+
+    TestMedianDirectionalRetainedDelta();
 
     if (::setenv("CUDA_MODULE_LOADING", "EAGER", 1) != 0) {
       throw std::runtime_error("Failed to request eager CUDA module loading");
@@ -280,15 +368,41 @@ int main() {
                 << " ms plus one padded-stride frame\n";
     };
 
+    const TrackedCudaResources warmup_resources_before =
+        SnapshotTrackedResources();
+    const TrackedCudaActivity warmup_activity_before =
+        SnapshotTrackedActivity();
     run_detector_lifecycle();
     TEST_CHECK_CUDA(cudaDeviceSynchronize());
+    const TrackedCudaResources warmup_resources_after =
+        SnapshotTrackedResources();
+    const TrackedCudaActivity warmup_activity_after =
+        SnapshotTrackedActivity();
+    RequireResourcesRestored(warmup_resources_before, warmup_resources_after,
+                             "warmup destroy");
+    RequireWarmupActivity(warmup_activity_before, warmup_activity_after);
+    std::cout << "CUDA warmup activity device_allocations="
+              << warmup_activity_after.device_allocation_calls -
+                     warmup_activity_before.device_allocation_calls
+              << " pinned_host_allocations="
+              << warmup_activity_after.pinned_host_allocation_calls -
+                     warmup_activity_before.pinned_host_allocation_calls
+              << " streams="
+              << warmup_activity_after.stream_creation_calls -
+                     warmup_activity_before.stream_creation_calls
+              << " events="
+              << warmup_activity_after.event_creation_calls -
+                     warmup_activity_before.event_creation_calls
+              << '\n';
+
     std::size_t baseline_free = 0;
     std::size_t baseline_total = 0;
     TEST_CHECK_CUDA(cudaMemGetInfo(&baseline_free, &baseline_total));
     std::cout << "CUDA warmed baseline_free=" << baseline_free
               << " total=" << baseline_total << '\n';
 
-    for (int cycle = 0; cycle < kMeasuredLifecycleCount; ++cycle) {
+    std::array<FreeMemorySample, kMeasuredLifecycleCount> free_memory_samples{};
+    for (std::size_t cycle = 0; cycle < kMeasuredLifecycleCount; ++cycle) {
       std::size_t cycle_before_free = 0;
       std::size_t cycle_before_total = 0;
       TEST_CHECK_CUDA(
@@ -302,7 +416,9 @@ int main() {
       run_detector_lifecycle();
       TEST_CHECK_CUDA(cudaDeviceSynchronize());
       const TrackedCudaResources resources_after = SnapshotTrackedResources();
-      RequireResourcesRestored(resources_before, resources_after);
+      RequireResourcesRestored(resources_before, resources_after,
+                               "measured lifecycle " +
+                                   std::to_string(cycle) + " destroy");
       std::cout << "CUDA tracked resources cycle=" << cycle
                 << " device_allocations="
                 << resources_after.device_allocations.size()
@@ -317,10 +433,27 @@ int main() {
       if (cycle_after_total != baseline_total) {
         throw std::runtime_error("CUDA total memory changed during smoke test");
       }
+      free_memory_samples[cycle] = {
+          .before = cycle_before_free,
+          .after = cycle_after_free,
+      };
+      const std::size_t retained_delta =
+          DirectionalRetainedDelta(free_memory_samples[cycle]);
       std::cout << "CUDA lifecycle cycle=" << cycle
                 << " before_free=" << cycle_before_free
                 << " after_free=" << cycle_after_free
+                << " retained_delta=" << retained_delta
                 << " total=" << cycle_after_total << '\n';
+    }
+
+    const std::size_t median_retained_delta =
+        MedianDirectionalRetainedDelta(free_memory_samples);
+    std::cout << "CUDA median directional retained_delta="
+              << median_retained_delta << " limit=" << kAllowedRetainedDelta
+              << '\n';
+    if (median_retained_delta >= kAllowedRetainedDelta) {
+      throw std::runtime_error(
+          "CUDA median directional retained delta must be less than 32 MiB");
     }
     return 0;
   } catch (const std::exception& error) {
